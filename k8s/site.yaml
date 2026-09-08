@@ -1,0 +1,94 @@
+# What actually runs. This file is the source of truth: Flux applies it, so the cluster
+# matches the repo and nothing is configured by hand.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: monke-app
+  labels: { app: monke-app }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: monke-app }
+  template:
+    metadata:
+      labels: { app: monke-app }
+    spec:
+      # One replica per node, so losing a node cannot take the app down.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels: { app: monke-app }
+              topologyKey: kubernetes.io/hostname
+      # Only needed if the GHCR package is private; without it the pull fails 401 and the
+      # pod sits in ImagePullBackOff. Delete these lines if the package is public.
+      imagePullSecrets:
+        - name: ghcr-creds
+      containers:
+        - name: app
+          # CI rewrites this tag on every push. Never `:latest` — the tag is how rollback
+          # works, and a moving tag means a restarted pod silently changes version.
+          image: ghcr.io/monkecloud/monke-app:REPLACE-ME
+          ports:
+            - containerPort: 8080
+          env:
+            # Postgres. `uri` is the production database, `uri_dev` the scratch one — the
+            # dev branch's manifests should use uri_dev.
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef: { name: yarn-pg, key: uri }
+            # Garage (S3-compatible). Not AWS: every call needs the endpoint set
+            # explicitly and path-style addressing.
+            - name: S3_ENDPOINT
+              valueFrom:
+                secretKeyRef: { name: yarn-garage, key: endpoint }
+            - name: S3_BUCKET
+              valueFrom:
+                secretKeyRef: { name: yarn-garage, key: bucket }
+            - name: S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef: { name: yarn-garage, key: access_key }
+            - name: S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef: { name: yarn-garage, key: secret_key }
+            # The cache from k8s/redis.yaml. `default` as the username is required:
+            # redis://:<password>@... sends an empty username and the server answers
+            # WRONGPASS, which reads like a wrong password.
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: monke-app-redis, key: password }
+            - name: REDIS_URL
+              value: redis://default:$(REDIS_PASSWORD)@monke-app-redis:6379/0
+          # Readiness is what pulls a pod out of the Service's endpoints; without it a
+          # starting or wedged replica still receives traffic.
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: monke-app
+spec:
+  selector: { app: monke-app }
+  ports:
+    - port: 80
+      targetPort: 8080
+---
+# Required by the two-replica pattern: without it a node drain can take both replicas at
+# once. Drop it if you ever run a single replica, where minAvailable: 1 blocks every drain.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: monke-app
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app: monke-app }

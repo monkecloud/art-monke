@@ -1,0 +1,27 @@
+# Public exposure. cert-manager sees this Ingress and issues the certificate itself.
+#
+# Renaming this Ingress silently breaks renewal: the Certificate is owned by the Ingress
+# that requested it, so deleting one garbage-collects the Certificate while the TLS Secret
+# survives, and a new Ingress refuses to adopt it. After any rename, delete the orphaned
+# Secret too and let cert-manager reissue.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: monke-app
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts: [app.monke.ca]
+      secretName: monke-app-tls
+  rules:
+    - host: app.monke.ca
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: monke-app
+                port: { number: 80 }

@@ -1,0 +1,48 @@
+# It builds the image, pushes it to GHCR, then writes the new tag back into k8s/.
+# That commit is what Flux notices — the workflow itself never talks to the cluster,
+# which is why no inbound network path is needed.
+name: build and deploy
+
+on:
+  push:
+    # prod and dev are branches; each builds its own image and its own tag bump.
+    branches: [master, dev]
+    # Do not re-trigger on the tag-bump commit this workflow makes itself.
+    paths-ignore:
+      - 'k8s/**'
+
+permissions:
+  contents: write   # to commit the tag bump
+  packages: write   # to push to GHCR
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}   # no PAT needed for pushing
+
+      - name: Build and push
+        id: build
+        run: |
+          IMAGE="ghcr.io/${{ github.repository }}"
+          IMAGE=$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')   # GHCR requires lowercase
+          TAG="${GITHUB_SHA::7}"
+          docker build -t "$IMAGE:$TAG" .
+          docker push "$IMAGE:$TAG"
+          echo "ref=$IMAGE:$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Point the manifests at the new image
+        run: |
+          sed -i -E "s|^(\s*image:\s*)ghcr\.io/.*$|\1${{ steps.build.outputs.ref }}|" k8s/*.yaml
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if ! git diff --quiet; then
+            git commit -am "deploy ${{ steps.build.outputs.ref }}"
+            git push
+          fi

@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# No `namespace:` here. Flux applies this repo with `targetNamespace` set to the namespace
+# built for this app-environment, so the same manifests serve prod and dev unchanged.
+resources:
+  - site.yaml
+  - ingress.yaml
+  # This repo's own cache. Best-effort by design — read the header in the file. Its
+  # password Secret (monke-app-redis) is applied from the infra repo, per namespace.
+  - redis.yaml

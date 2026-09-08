@@ -1,0 +1,105 @@
+# An optional cache for this repo. Not applied until you uncomment it in kustomization.yaml.
+#
+# A cache belongs to the repo that wants it — nothing is provisioned for you, and each repo
+# that needs one ships its own. Names are prefixed with the app so two repos deploying into
+# related namespaces never collide.
+#
+# It is best-effort by design: one pod, one node, a local-path PVC. It survives a pod
+# restart, is unavailable while its node is down, and is GONE if that node is lost. Nothing
+# here is backed up or replicated. Cache, lock, rate limiter, or a queue you can rebuild —
+# anything durable belongs in Postgres or the bucket.
+#
+# Connection URL: use `default` as the username — `redis://default:<password>@monke-app-redis:6379/0`.
+# The `redis://:<password>@...` form sends an empty username and a `requirepass`-only server
+# rejects it with `WRONGPASS`.
+#
+# The password lives in a Secret named monke-app-redis, key `password`. Ask the cluster admin
+# to add it to your namespace — an app repo never carries credentials.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: monke-app-redis
+  labels:
+    app: monke-app-redis
+spec:
+  type: ClusterIP
+  selector:
+    app: monke-app-redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: monke-app-redis
+spec:
+  serviceName: monke-app-redis
+  replicas: 1
+  selector:
+    matchLabels:
+      app: monke-app-redis
+  template:
+    metadata:
+      labels:
+        app: monke-app-redis
+    spec:
+      # Satisfies the stricter `restricted` Pod Security profile, so this pod admits
+      # without warnings. Redis runs fine as its own unprivileged uid; fsGroup is what
+      # gives it write access to the volume.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: redis
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          image: redis:7-alpine
+          args:
+            - --requirepass
+            - $(REDIS_PASSWORD)
+            - --appendonly
+            - 'yes'
+            - --dir
+            - /data
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: monke-app-redis, key: password }
+          ports:
+            - name: redis
+              containerPort: 6379
+          readinessProbe:
+            exec:
+              command: [sh, -c, 'redis-cli -a "$REDIS_PASSWORD" ping']
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: [sh, -c, 'redis-cli -a "$REDIS_PASSWORD" ping']
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 1Gi
