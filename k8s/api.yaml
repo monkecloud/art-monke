@@ -31,7 +31,7 @@ spec:
         - name: api
           # CI rewrites this tag on every push, to the same tag web.yaml gets — both images
           # are built from the commit they are tagged with.
-          image: ghcr.io/monkecloud/monke-app/api:dc3f415
+          image: ghcr.io/monkecloud/monke-app/api:7c5f01b
           ports:
             - containerPort: 8080
           # Postgres, as libpq variables rather than one URL. The credential is the
