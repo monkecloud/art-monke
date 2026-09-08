@@ -1,5 +1,9 @@
 # Public exposure. cert-manager sees this Ingress and issues the certificate itself.
 #
+# The hostname here is the production one on BOTH branches. The cluster's dev overlay
+# patches it to the dev hostname when it applies this repo into the dev namespace, which is
+# what keeps the two branches byte-identical and every dev -> master merge conflict-free.
+#
 # Renaming this Ingress silently breaks renewal: the Certificate is owned by the Ingress
 # that requested it, so deleting one garbage-collects the Certificate while the TLS Secret
 # survives, and a new Ingress refuses to adopt it. After any rename, delete the orphaned
@@ -13,10 +17,10 @@ metadata:
 spec:
   ingressClassName: traefik
   tls:
-    - hosts: [dev-app.monke.ca]
+    - hosts: [app.monke.ca]
       secretName: monke-app-tls
   rules:
-    - host: dev-app.monke.ca
+    - host: app.monke.ca
       http:
         paths:
           - path: /

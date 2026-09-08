@@ -32,11 +32,12 @@ spec:
           ports:
             - containerPort: 8080
           env:
-            # Postgres. `uri` is the production database, `uri_dev` the scratch one — the
-            # dev branch's manifests should use uri_dev.
+            # Postgres. This says `uri`, the production database, on BOTH branches: the
+            # cluster's dev overlay patches it to `uri_dev` when it applies this repo into
+            # the dev namespace. Do not branch this file to change it.
             - name: DATABASE_URL
               valueFrom:
-                secretKeyRef: { name: yarn-pg, key: uri_dev }
+                secretKeyRef: { name: yarn-pg, key: uri }
             # Garage (S3-compatible). Not AWS: every call needs the endpoint set
             # explicitly and path-style addressing.
             - name: S3_ENDPOINT
