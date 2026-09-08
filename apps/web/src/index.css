@@ -19,3 +19,27 @@ button {
   border-radius: 6px;
   cursor: pointer;
 }
+
+dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 1rem;
+  margin: 1.5rem 0;
+}
+
+dt {
+  color: #6b7280;
+}
+
+dd {
+  margin: 0;
+  font-family: ui-monospace, monospace;
+}
+
+.muted {
+  color: #6b7280;
+}
+
+.error {
+  color: #b91c1c;
+}
