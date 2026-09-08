@@ -16,9 +16,13 @@ CI builds the image, pushes it to `ghcr.io/monkecloud/monke-app`, and commits th
 into `k8s/`. That commit is what Flux picks up. A rollback is `git revert` plus a push —
 never an out-of-band change, or the repo stops describing what is running.
 
-Both branches deploy the **same manifests** — byte-identical, so a `dev` -> `master` merge
-never conflicts. There are no per-environment name suffixes: the environments are different
-namespaces.
+Both branches deploy the **same manifests**. There are no per-environment name suffixes:
+the environments are different namespaces.
+
+The one line that legitimately differs between the branches is the image tag, because each
+branch's CI commits its own. A `dev` -> `master` merge therefore conflicts on exactly that
+line whenever the two branches last built different code — take `dev`'s, since that is the
+code you are promoting, and master's CI will rebuild and rewrite it anyway.
 
 **Never introduce a branch difference in `k8s/`.** The two things that genuinely differ per
 environment — the Postgres key (`uri` vs `uri_dev`) and the public hostname — are patched in
