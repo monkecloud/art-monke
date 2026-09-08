@@ -34,9 +34,30 @@ spec:
           image: ghcr.io/monkecloud/monke-app/api:fd80f70
           ports:
             - containerPort: 8080
-          # No DATABASE_URL or S3_* yet: this serves a static JSON object and touches
-          # neither. Copy the env block from web.yaml when it actually needs them — an env
-          # var pointing at a Secret key that does not exist keeps the pod from starting.
+          # Postgres, as libpq variables rather than one URL. The credential is the
+          # owner's role, unchanged and shared; what is this app's own is the database.
+          env:
+            - name: PGHOST
+              valueFrom:
+                secretKeyRef: { name: yarn-pg, key: host }
+            - name: PGPORT
+              valueFrom:
+                secretKeyRef: { name: yarn-pg, key: port }
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef: { name: yarn-pg, key: username }
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef: { name: yarn-pg, key: password }
+            # This app's own database: monke_app in prod, monke_app_dev in dev. The
+            # ConfigMap is applied per namespace by the infra repo, so this line is
+            # identical on both branches and there is no overlay patch to misfire. That
+            # matters: the `uri`/`uri_dev` patch is keyed to the monke-app Deployment by
+            # name, so it would never have reached this one, and dev would have written to
+            # the production database in silence.
+            - name: PGDATABASE
+              valueFrom:
+                configMapKeyRef: { name: monke-app-db, key: database }
           readinessProbe:
             httpGet: { path: /healthz, port: 8080 }
             periodSeconds: 5

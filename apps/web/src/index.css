@@ -43,3 +43,14 @@ dd {
 .error {
   color: #b91c1c;
 }
+
+.count {
+  font-size: 3.5rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  margin: 1.5rem 0 0;
+}
+
+.count + .muted {
+  margin-top: 0.25rem;
+}

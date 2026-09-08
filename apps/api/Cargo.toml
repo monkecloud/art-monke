@@ -6,6 +6,17 @@ edition = "2021"
 [dependencies]
 axum = "0.8"
 serde = { version = "1", features = ["derive"] }
+# `macros` is needed for migrate!, which embeds migrations/ into the binary. It does not
+# imply a database at build time — only the query!/query_as! macros check against a live
+# one, and this crate deliberately uses the runtime query functions instead so CI can build
+# without Postgres.
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls",
+    "postgres",
+    "migrate",
+    "macros",
+] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
 
 [profile.release]

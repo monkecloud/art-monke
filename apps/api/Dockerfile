@@ -8,6 +8,8 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir src && echo 'fn main() {}' > src/main.rs && cargo build --release && rm -rf src
 
+# sqlx::migrate! embeds these at compile time, so they must be present for the real build.
+COPY migrations ./migrations
 COPY src ./src
 # The stub's artifacts are newer than the real sources cargo just replaced, so without a
 # touch cargo decides there is nothing to rebuild and ships the stub.
