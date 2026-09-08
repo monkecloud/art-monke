@@ -47,8 +47,8 @@ Garage is S3-compatible but **not** AWS: pass the endpoint explicitly and use pa
 addressing (`aws --endpoint-url "$S3_ENDPOINT" s3 ...`, or `endpoint_url=` in boto3).
 
 ### A cache, if this repo wants one
-Nothing is provisioned. `k8s/redis.yaml` is a single-pod Redis, commented out of the
-kustomization — uncomment it and ask the admin for its password Secret. Treat it as
+`k8s/redis.yaml` is a single-pod Redis, and this repo runs it: it is in the kustomization
+and its password Secret (`monke-app-redis`) is in the namespace. Treat it as
 **disposable**: one pod on one node, unavailable while that node is down and gone for good
 if the node is lost. Not backed up, not replicated.
 
@@ -73,10 +73,27 @@ The `redis://:<password>@...` form sends an empty username and the server answer
 - **Resource budget** per namespace: 10 pods, 1 CPU / 2Gi requested, 2 CPU / 4Gi limit,
   3 PVCs. Nodes are 4-core with 1GbE between them.
 
+## Services
+
+One directory per service under `apps/`, each with its own Dockerfile and its own GHCR
+image, and each with a Deployment in `k8s/`:
+
+- `apps/web` — TypeScript + Vite + React, built and served by nginx. `ghcr.io/monkecloud/monke-app`.
+- `apps/api` — Rust + tokio + axum. `ghcr.io/monkecloud/monke-app/api`.
+
+CI builds every service as a matrix and commits a single tag bump once all of them succeed,
+so a half-built set never reaches Flux. Every service ships on the short SHA of the commit
+that built it, so one tag describes the whole repo and a rollback stays one revert.
+
+Traefik routes by path prefix on the one hostname — `/api` to the api, `/` to web. The
+prefix is not stripped, so the api serves its routes under `/api`. A new service needs a
+path here, not a new hostname: hostnames are patched per-environment by the cluster overlay
+and adding one is an admin change.
+
 ## Static content
 
-Content lives in this repo and is baked into the image by the Dockerfile, so it is
-versioned with the code and a deploy is one new tag. There is no bucket to upload to —
+Content lives in this repo and is baked into each service's image by its Dockerfile, so it
+is versioned with the code and a deploy is one new tag. There is no bucket to upload to —
 Garage is for application data, not site content.
 
 ## Checking on things

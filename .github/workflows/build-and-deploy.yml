@@ -7,9 +7,12 @@ on:
   push:
     # prod and dev are branches; each builds its own images and its own tag bump.
     branches: [master, dev]
-    # Do not re-trigger on the tag-bump commit this workflow makes itself.
+    # Do not re-trigger on the tag-bump commit this workflow makes itself, and do not
+    # rebuild both images to ship a documentation edit — nothing under these paths reaches
+    # a running container.
     paths-ignore:
       - 'k8s/**'
+      - '**.md'
 
 permissions:
   contents: write   # to commit the tag bump
