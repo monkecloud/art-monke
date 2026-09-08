@@ -13,10 +13,10 @@ metadata:
 spec:
   ingressClassName: traefik
   tls:
-    - hosts: [app.monke.ca]
+    - hosts: [dev-app.monke.ca]
       secretName: monke-app-tls
   rules:
-    - host: app.monke.ca
+    - host: dev-app.monke.ca
       http:
         paths:
           - path: /

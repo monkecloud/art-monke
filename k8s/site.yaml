@@ -36,7 +36,7 @@ spec:
             # dev branch's manifests should use uri_dev.
             - name: DATABASE_URL
               valueFrom:
-                secretKeyRef: { name: yarn-pg, key: uri }
+                secretKeyRef: { name: yarn-pg, key: uri_dev }
             # Garage (S3-compatible). Not AWS: every call needs the endpoint set
             # explicitly and path-style addressing.
             - name: S3_ENDPOINT
