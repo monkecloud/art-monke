@@ -31,7 +31,7 @@ spec:
         - name: api
           # CI rewrites this tag on every push, to the same tag web.yaml gets — both images
           # are built from the commit they are tagged with.
-          image: ghcr.io/monkecloud/monke-app/api:189411b
+          image: ghcr.io/monkecloud/monke-app/api:fd80f70
           ports:
             - containerPort: 8080
           # No DATABASE_URL or S3_* yet: this serves a static JSON object and touches
