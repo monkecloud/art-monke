@@ -38,6 +38,11 @@ gh run view --log-failed
 Merge `dev` into `master` and push. The prod branch builds its own image and its own tag bump,
 so the two environments never share a tag by accident.
 
+Expect one conflict, on the `image:` line in `k8s/site.yaml` — each branch's CI wrote its own
+tag there. Take `dev`'s: it is the code being promoted, and master's build overwrites it a
+minute later. Nothing else should ever conflict; if it does, someone has put an
+environment difference on a branch, which belongs in the cluster's dev overlay instead.
+
 ## Rolling back
 
 ```bash
