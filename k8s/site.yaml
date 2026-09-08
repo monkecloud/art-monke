@@ -7,6 +7,13 @@ metadata:
   labels: { app: monke-app }
 spec:
   replicas: 2
+  # Spelled out rather than left to the defaults, because the namespace quota makes the
+  # surge size load-bearing: one extra pod fits, two would not.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels: { app: monke-app }
   template:

@@ -88,9 +88,13 @@ spec:
               command: [sh, -c, 'redis-cli -a "$REDIS_PASSWORD" ping']
             initialDelaySeconds: 15
             periodSeconds: 20
+          # Kept small on purpose. The namespace quota caps limits.cpu at 2, and a
+          # rolling update of a 2-replica app briefly runs a third pod — at 500m here
+          # that totals 2000m and the surge pod is refused, so the rollout never
+          # finishes. 250m leaves the headroom the rollout needs.
           resources:
             requests: { cpu: 50m, memory: 64Mi }
-            limits: { cpu: 500m, memory: 256Mi }
+            limits: { cpu: 250m, memory: 256Mi }
           volumeMounts:
             - name: data
               mountPath: /data
