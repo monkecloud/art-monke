@@ -35,38 +35,9 @@ spec:
         - name: app
           # CI rewrites this tag on every push. Never `:latest` — the tag is how rollback
           # works, and a moving tag means a restarted pod silently changes version.
-          image: ghcr.io/monkecloud/monke-app:24c70e2
+          image: ghcr.io/monkecloud/monke-app:dc3f415
           ports:
             - containerPort: 8080
-          env:
-            # Postgres. This says `uri`, the production database, on BOTH branches: the
-            # cluster's dev overlay patches it to `uri_dev` when it applies this repo into
-            # the dev namespace. Do not branch this file to change it.
-            - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef: { name: yarn-pg, key: uri }
-            # Garage (S3-compatible). Not AWS: every call needs the endpoint set
-            # explicitly and path-style addressing.
-            - name: S3_ENDPOINT
-              valueFrom:
-                secretKeyRef: { name: yarn-garage, key: endpoint }
-            - name: S3_BUCKET
-              valueFrom:
-                secretKeyRef: { name: yarn-garage, key: bucket }
-            - name: S3_ACCESS_KEY
-              valueFrom:
-                secretKeyRef: { name: yarn-garage, key: access_key }
-            - name: S3_SECRET_KEY
-              valueFrom:
-                secretKeyRef: { name: yarn-garage, key: secret_key }
-            # The cache from k8s/redis.yaml. `default` as the username is required:
-            # redis://:<password>@... sends an empty username and the server answers
-            # WRONGPASS, which reads like a wrong password.
-            - name: REDIS_PASSWORD
-              valueFrom:
-                secretKeyRef: { name: monke-app-redis, key: password }
-            - name: REDIS_URL
-              value: redis://default:$(REDIS_PASSWORD)@monke-app-redis:6379/0
           # Readiness is what pulls a pod out of the Service's endpoints; without it a
           # starting or wedged replica still receives traffic.
           readinessProbe:
@@ -78,7 +49,10 @@ spec:
             periodSeconds: 20
           resources:
             requests: { cpu: 100m, memory: 128Mi }
-            limits: { cpu: 500m, memory: 512Mi }
+            # Trimmed from 500m/512Mi to fit the api alongside this: the namespace caps
+            # summed limits at 2 CPU, and a rolling update needs one pod of headroom on
+            # top of that. nginx serving a static bundle is nowhere near this ceiling.
+            limits: { cpu: 250m, memory: 256Mi }
 ---
 apiVersion: v1
 kind: Service

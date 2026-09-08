@@ -3,7 +3,8 @@ kind: Kustomization
 # No `namespace:` here. Flux applies this repo with `targetNamespace` set to the namespace
 # built for this app-environment, so the same manifests serve prod and dev unchanged.
 resources:
-  - site.yaml
+  - web.yaml
+  - api.yaml
   - ingress.yaml
   # This repo's own cache. Best-effort by design — read the header in the file. Its
   # password Secret (monke-app-redis) is applied from the infra repo, per namespace.

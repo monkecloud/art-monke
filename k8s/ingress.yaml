@@ -23,6 +23,15 @@ spec:
     - host: app.monke.ca
       http:
         paths:
+          # /api first for readability; Traefik matches the longer prefix regardless of
+          # order. The prefix is NOT stripped, so the api serves its routes under /api
+          # rather than needing a rewrite middleware.
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: monke-app-api
+                port: { number: 80 }
           - path: /
             pathType: Prefix
             backend:

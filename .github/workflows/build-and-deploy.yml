@@ -1,25 +1,53 @@
-# It builds the image, pushes it to GHCR, then writes the new tag back into k8s/.
-# That commit is what Flux notices — the workflow itself never talks to the cluster,
+# It builds one image per service, pushes them to GHCR, then writes the new tag back into
+# k8s/. That commit is what Flux notices — the workflow itself never talks to the cluster,
 # which is why no inbound network path is needed.
 name: build and deploy
 
 on:
   push:
-    # prod and dev are branches; each builds its own image and its own tag bump.
+    # prod and dev are branches; each builds its own images and its own tag bump.
     branches: [master, dev]
-    # Do not re-trigger on the tag-bump commit this workflow makes itself.
+    # Do not re-trigger on the tag-bump commit this workflow makes itself, and do not
+    # rebuild both images to ship a documentation edit — nothing under these paths reaches
+    # a running container.
     paths-ignore:
       - 'k8s/**'
+      - '**.md'
 
 permissions:
   contents: write   # to commit the tag bump
   packages: write   # to push to GHCR
 
 jobs:
-  build:
+  # Every service ships on the short SHA of the commit that built it, so one tag describes
+  # the whole repo state. That is what lets the deploy job below rewrite every image line
+  # with a single value, and what makes a rollback one revert of one commit.
+  tag:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.t.outputs.tag }}
+    steps:
+      - id: t
+        run: echo "tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: tag
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # `suffix` is appended to the repo's own GHCR path. web keeps the bare name it
+          # has always had — renaming it would create a new, private package that the
+          # ghcr-creds pull secret has never been granted.
+          - service: web
+            suffix: ''
+          - service: api
+            suffix: /api
     steps:
       - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3
         with:
@@ -27,22 +55,40 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}   # no PAT needed for pushing
 
-      - name: Build and push
-        id: build
+      - name: Resolve image name
+        id: img
         run: |
-          IMAGE="ghcr.io/${{ github.repository }}"
-          IMAGE=$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')   # GHCR requires lowercase
-          TAG="${GITHUB_SHA::7}"
-          docker build -t "$IMAGE:$TAG" .
-          docker push "$IMAGE:$TAG"
-          echo "ref=$IMAGE:$TAG" >> "$GITHUB_OUTPUT"
+          NAME="ghcr.io/${{ github.repository }}${{ matrix.suffix }}"
+          echo "name=$(echo "$NAME" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
-      - name: Point the manifests at the new image
+      - uses: docker/build-push-action@v6
+        with:
+          context: apps/${{ matrix.service }}
+          push: true
+          tags: ${{ steps.img.outputs.name }}:${{ needs.tag.outputs.tag }}
+          # Scoped per service so web's cache cannot evict api's. Without this the Rust
+          # image recompiles its whole dependency tree on every push.
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+  # Separate from build, and needing all of it: a half-built set must never be committed,
+  # or Flux rolls out a tag that exists for one service and not the other. One job also
+  # means one commit and one push, so parallel builds cannot race each other on the branch.
+  deploy:
+    needs: [tag, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Point the manifests at the new images
         run: |
-          sed -i -E "s|^(\s*image:\s*)ghcr\.io/.*$|\1${{ steps.build.outputs.ref }}|" k8s/*.yaml
+          # Rewrites only the tag, preserving each image's own name — the capture group is
+          # what keeps two services from collapsing onto one image. redis is untouched
+          # because it is not on ghcr.io.
+          sed -i -E "s|^(\s*image:\s*ghcr\.io/\S+):\S+$|\1:${{ needs.tag.outputs.tag }}|" k8s/*.yaml
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           if ! git diff --quiet; then
-            git commit -am "deploy ${{ steps.build.outputs.ref }}"
+            git commit -am "deploy ${{ needs.tag.outputs.tag }}"
             git push
           fi
