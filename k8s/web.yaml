@@ -78,7 +78,10 @@ spec:
             periodSeconds: 20
           resources:
             requests: { cpu: 100m, memory: 128Mi }
-            limits: { cpu: 500m, memory: 512Mi }
+            # Trimmed from 500m/512Mi to fit the api alongside this: the namespace caps
+            # summed limits at 2 CPU, and a rolling update needs one pod of headroom on
+            # top of that. nginx serving a static bundle is nowhere near this ceiling.
+            limits: { cpu: 250m, memory: 256Mi }
 ---
 apiVersion: v1
 kind: Service

@@ -1,0 +1,68 @@
+# The Rust/axum backend. Same shape as web.yaml: Flux applies this, so the cluster matches
+# the repo and nothing is configured by hand.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: monke-app-api
+  labels: { app: monke-app-api }
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels: { app: monke-app-api }
+  template:
+    metadata:
+      labels: { app: monke-app-api }
+    spec:
+      # One replica per node, so losing a node cannot take the api down.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels: { app: monke-app-api }
+              topologyKey: kubernetes.io/hostname
+      imagePullSecrets:
+        - name: ghcr-creds
+      containers:
+        - name: api
+          # CI rewrites this tag on every push, to the same tag web.yaml gets — both images
+          # are built from the commit they are tagged with.
+          image: ghcr.io/monkecloud/monke-app/api:36ac77c
+          ports:
+            - containerPort: 8080
+          # No DATABASE_URL or S3_* yet: this serves a static JSON object and touches
+          # neither. Copy the env block from web.yaml when it actually needs them — an env
+          # var pointing at a Secret key that does not exist keeps the pod from starting.
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 250m, memory: 256Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: monke-app-api
+spec:
+  selector: { app: monke-app-api }
+  ports:
+    - port: 80
+      targetPort: 8080
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: monke-app-api
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app: monke-app-api }
