@@ -16,6 +16,11 @@ COPY src ./src
 RUN touch src/main.rs && cargo build --release
 
 FROM debian:bookworm-slim
+# reqwest's rustls backend loads the system root store when it builds a client, even for an
+# all-HTTP target like today's Garage endpoint — without this package that load finds
+# nothing and panics.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 # Non-root is not required by the baseline policy, but nothing here needs root.
 RUN useradd --system --uid 10001 monke
 USER 10001
