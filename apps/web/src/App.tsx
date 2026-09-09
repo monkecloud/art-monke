@@ -1,59 +1,136 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
+import { type AudioFile, deleteAudioFile, fetchAudioFiles } from './audioFiles'
+import { FileList } from './FileList'
+import { LoginPage } from './LoginPage'
+import { ToastStack, useToasts } from './Toasts'
+import { uploadAudio } from './uploadAudio'
 
-type Visits = {
-  visits: number
-}
-
-type State =
+type Session =
   | { kind: 'loading' }
+  | { kind: 'anon' }
+  | { kind: 'authed'; username: string }
   | { kind: 'error'; message: string }
-  | { kind: 'ready'; visits: number }
 
 export default function App() {
-  const [state, setState] = useState<State>({ kind: 'loading' })
+  const [session, setSession] = useState<Session>({ kind: 'loading' })
+  const [files, setFiles] = useState<AudioFile[]>([])
+  const toasts = useToasts()
+
+  const refreshFiles = useCallback(() => {
+    fetchAudioFiles()
+      .then(setFiles)
+      .catch(() => {})
+  }, [])
 
   useEffect(() => {
-    // Relative, not an absolute URL: the Ingress serves web and api from one hostname, so
-    // this is same-origin in the cluster and needs no CORS or configured base URL. Locally
-    // the Vite dev proxy stands in for the Ingress.
-    //
-    // POST because the call has an effect. Note that StrictMode mounts effects twice in
-    // development, so `npm run dev` counts two visits per load; a production build does
-    // not, and the deployed bundle is a production build.
+    if (session.kind !== 'authed') return
     const ac = new AbortController()
-
-    fetch('/api/visits', { method: 'POST', signal: ac.signal })
-      .then(async (res) => {
-        if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
-        return (await res.json()) as Visits
-      })
-      .then(({ visits }) => setState({ kind: 'ready', visits }))
+    fetchAudioFiles(ac.signal)
+      .then(setFiles)
       .catch((err: unknown) => {
         if (err instanceof DOMException && err.name === 'AbortError') return
-        setState({ kind: 'error', message: err instanceof Error ? err.message : String(err) })
+      })
+    return () => ac.abort()
+  }, [session.kind])
+
+  useEffect(() => {
+    const ac = new AbortController()
+
+    fetch('/api/auth/me', { signal: ac.signal })
+      .then(async (res) => {
+        if (res.status === 401) {
+          setSession({ kind: 'anon' })
+          return
+        }
+        if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+        const { username } = (await res.json()) as { username: string }
+        setSession({ kind: 'authed', username })
+      })
+      .catch((err: unknown) => {
+        if (err instanceof DOMException && err.name === 'AbortError') return
+        setSession({ kind: 'error', message: err instanceof Error ? err.message : String(err) })
       })
 
     return () => ac.abort()
   }, [])
 
+  if (session.kind === 'loading') {
+    return (
+      <main>
+        <p className="muted">Loading…</p>
+      </main>
+    )
+  }
+
+  if (session.kind === 'error') {
+    return (
+      <main>
+        <p className="error">Could not reach the api: {session.message}</p>
+      </main>
+    )
+  }
+
+  if (session.kind === 'anon') {
+    return <LoginPage onSignedIn={(username) => setSession({ kind: 'authed', username })} />
+  }
+
   return (
     <main>
+      <header className="topbar">
+        <span className="muted">Signed in as {session.username}</span>
+        <button
+          onClick={() => {
+            // Fire-and-forget: the cookie is cleared client-side regardless of whether the
+            // request lands, so a flaky connection can't strand the user in a signed-in UI
+            // that no longer has a working session.
+            fetch('/api/auth/logout', { method: 'POST' }).catch(() => {})
+            setSession({ kind: 'anon' })
+          }}
+        >
+          Log out
+        </button>
+      </header>
+
       <h1>monke-app</h1>
 
-      {state.kind === 'loading' && <p className="muted">Counting…</p>}
+      <label className="upload-button">
+        Upload audio
+        <input
+          type="file"
+          accept="audio/*"
+          hidden
+          onChange={(e) => {
+            const file = e.target.files?.[0]
+            e.target.value = ''
+            if (!file) return
 
-      {state.kind === 'error' && (
-        <p className="error">Could not reach the api: {state.message}</p>
-      )}
+            // Stands in for the real row until refreshFiles() replaces it: the server
+            // already has an 'uploading' row for this at this point, but the client has no
+            // way to know its id until the whole request settles.
+            setFiles((fs) => [
+              { id: -Date.now(), filename: file.name, status: 'uploading', created_at: '' },
+              ...fs,
+            ])
+            uploadAudio(file, toasts, refreshFiles)
+          }}
+        />
+      </label>
 
-      {state.kind === 'ready' && (
-        <>
-          <p className="count">{state.visits.toLocaleString()}</p>
-          <p className="muted">
-            page {state.visits === 1 ? 'load' : 'loads'}, counted in Postgres
-          </p>
-        </>
-      )}
+      <FileList
+        files={files}
+        onDelete={(id) => {
+          deleteAudioFile(id)
+            .then(refreshFiles)
+            .catch(() => {
+              toasts.upsert(
+                { id: `delete-${id}`, kind: 'error', label: 'Failed to delete file' },
+                6000,
+              )
+            })
+        }}
+      />
+
+      <ToastStack toasts={toasts.toasts} onDismiss={toasts.dismiss} />
     </main>
   )
 }
