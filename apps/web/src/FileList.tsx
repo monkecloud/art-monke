@@ -17,6 +17,11 @@ export function FileList({
         <li key={file.id} className="file-row">
           <span className="file-name">{file.filename}</span>
           <span className={`status-badge status-${file.status}`}>{file.status}</span>
+          {file.status === 'uploaded' && (
+            <a className="link" href={`/api/audio/${file.id}`} download={file.filename}>
+              Download
+            </a>
+          )}
           <button type="button" className="link" onClick={() => onDelete(file.id)}>
             Delete
           </button>

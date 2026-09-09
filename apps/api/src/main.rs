@@ -8,9 +8,9 @@ use axum::extract::{FromRef, FromRequestParts, Path, Query, Request, State};
 use axum::http::request::Parts;
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::{routing::delete, routing::get, routing::post, Json, Router};
+use axum::{routing::get, routing::post, Json, Router};
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
-use rusty_s3::actions::{DeleteObject, PutObject, S3Action};
+use rusty_s3::actions::{DeleteObject, GetObject, PutObject, S3Action};
 use rusty_s3::{Bucket, Credentials as S3Credentials, UrlStyle};
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
@@ -237,24 +237,26 @@ where
 
 // AuthUser's own rejection (AuthError) already handles the unauthenticated case directly,
 // so this only needs to cover failures past that point.
-enum UploadError {
+enum AudioError {
     LengthRequired,
     TooLarge,
     NotFound,
     UploadFailed,
+    DownloadFailed,
     Internal,
 }
 
-impl IntoResponse for UploadError {
+impl IntoResponse for AudioError {
     fn into_response(self) -> Response {
         let (status, body) = match self {
-            UploadError::LengthRequired => {
+            AudioError::LengthRequired => {
                 (StatusCode::LENGTH_REQUIRED, "content-length required\n")
             }
-            UploadError::TooLarge => (StatusCode::PAYLOAD_TOO_LARGE, "file too large\n"),
-            UploadError::NotFound => (StatusCode::NOT_FOUND, "not found\n"),
-            UploadError::UploadFailed => (StatusCode::BAD_GATEWAY, "upload failed\n"),
-            UploadError::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal error\n"),
+            AudioError::TooLarge => (StatusCode::PAYLOAD_TOO_LARGE, "file too large\n"),
+            AudioError::NotFound => (StatusCode::NOT_FOUND, "not found\n"),
+            AudioError::UploadFailed => (StatusCode::BAD_GATEWAY, "upload failed\n"),
+            AudioError::DownloadFailed => (StatusCode::BAD_GATEWAY, "download failed\n"),
+            AudioError::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal error\n"),
         };
         (status, body).into_response()
     }
@@ -280,16 +282,16 @@ async fn upload_audio(
     user: AuthUser,
     Query(query): Query<UploadQuery>,
     request: Request,
-) -> Result<(StatusCode, Json<UploadedFile>), UploadError> {
+) -> Result<(StatusCode, Json<UploadedFile>), AudioError> {
     let content_length = request
         .headers()
         .get(header::CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<u64>().ok())
-        .ok_or(UploadError::LengthRequired)?;
+        .ok_or(AudioError::LengthRequired)?;
 
     if content_length == 0 || content_length > MAX_UPLOAD_BYTES {
-        return Err(UploadError::TooLarge);
+        return Err(AudioError::TooLarge);
     }
 
     let content_type = request
@@ -313,7 +315,7 @@ async fn upload_audio(
     .await
     .map_err(|e| {
         eprintln!("query failed: {e}");
-        UploadError::Internal
+        AudioError::Internal
     })?;
 
     // Signed for the api to use immediately itself, not handed to the client, so a short
@@ -343,7 +345,7 @@ async fn upload_audio(
         {
             eprintln!("query failed: {e}");
         }
-        return Err(UploadError::UploadFailed);
+        return Err(AudioError::UploadFailed);
     }
 
     // Guarded on the row still being 'uploading' so a delete that lands while this upload
@@ -356,7 +358,7 @@ async fn upload_audio(
     .await
     .map_err(|e| {
         eprintln!("query failed: {e}");
-        UploadError::Internal
+        AudioError::Internal
     })?;
 
     Ok((StatusCode::CREATED, Json(UploadedFile { id: file_id })))
@@ -373,7 +375,7 @@ struct AudioFile {
 async fn list_audio(
     State(app): State<AppState>,
     user: AuthUser,
-) -> Result<Json<Vec<AudioFile>>, UploadError> {
+) -> Result<Json<Vec<AudioFile>>, AudioError> {
     let rows: Vec<(i64, String, String, String)> = sqlx::query_as(
         r#"SELECT id, filename, status,
                   to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
@@ -386,7 +388,7 @@ async fn list_audio(
     .await
     .map_err(|e| {
         eprintln!("query failed: {e}");
-        UploadError::Internal
+        AudioError::Internal
     })?;
 
     Ok(Json(
@@ -401,13 +403,90 @@ async fn list_audio(
     ))
 }
 
+// A Content-Disposition filename is a quoted header value, not free text: reject anything
+// that could break out of the quotes or inject a header, and fall back to '_' rather than
+// failing the whole download over a stray character in a name the user picked themselves.
+fn sanitize_filename_header(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii() && !c.is_ascii_control() && c != '"' && c != '\\' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+// Proxies the download for the same reason uploads are proxied: Garage has no public
+// Ingress, so a presigned URL handed to the browser would point somewhere it can't reach.
+// Streams the S3 response straight into the api's own response body rather than buffering.
+async fn download_audio(
+    State(app): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<i64>,
+) -> Result<Response, AudioError> {
+    let row: Option<(String, String)> = sqlx::query_as(
+        "SELECT s3_key, filename FROM audio_files WHERE id = $1 AND user_id = $2 AND status = 'uploaded'",
+    )
+    .bind(id)
+    .bind(user.id)
+    .fetch_optional(&app.pool)
+    .await
+    .map_err(|e| {
+        eprintln!("query failed: {e}");
+        AudioError::Internal
+    })?;
+
+    let (key, filename) = row.ok_or(AudioError::NotFound)?;
+
+    let action = GetObject::new(&app.s3_bucket, Some(&app.s3_credentials), &key);
+    let signed_url = action.sign(Duration::from_secs(60));
+
+    let s3_response = app
+        .http
+        .get(signed_url)
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(|e| {
+            eprintln!("s3 get failed: {e}");
+            AudioError::DownloadFailed
+        })?;
+
+    // Whatever content-type the upload stored (or defaulted to) is what Garage hands back.
+    let content_type = s3_response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/octet-stream")
+        .to_owned();
+
+    let body = axum::body::Body::from_stream(s3_response.bytes_stream());
+
+    Response::builder()
+        .header(header::CONTENT_TYPE, content_type)
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!(
+                "attachment; filename=\"{}\"",
+                sanitize_filename_header(&filename)
+            ),
+        )
+        .body(body)
+        .map_err(|e| {
+            eprintln!("response build failed: {e}");
+            AudioError::Internal
+        })
+}
+
 // Soft-delete: the S3 object is actually removed, but the row stays around at status
 // 'deleted' rather than being dropped, so history isn't lost.
 async fn delete_audio(
     State(app): State<AppState>,
     user: AuthUser,
     Path(id): Path<i64>,
-) -> Result<StatusCode, UploadError> {
+) -> Result<StatusCode, AudioError> {
     let key: Option<(String,)> = sqlx::query_as(
         "SELECT s3_key FROM audio_files WHERE id = $1 AND user_id = $2 AND status != 'deleted'",
     )
@@ -417,10 +496,10 @@ async fn delete_audio(
     .await
     .map_err(|e| {
         eprintln!("query failed: {e}");
-        UploadError::Internal
+        AudioError::Internal
     })?;
 
-    let (key,) = key.ok_or(UploadError::NotFound)?;
+    let (key,) = key.ok_or(AudioError::NotFound)?;
 
     // S3 DELETE is idempotent, so this is fine even for a row that's still 'uploading' and
     // never actually got an object written.
@@ -434,7 +513,7 @@ async fn delete_audio(
         .and_then(reqwest::Response::error_for_status)
     {
         eprintln!("s3 delete failed: {e}");
-        return Err(UploadError::UploadFailed);
+        return Err(AudioError::UploadFailed);
     }
 
     sqlx::query("UPDATE audio_files SET status = 'deleted' WHERE id = $1")
@@ -443,7 +522,7 @@ async fn delete_audio(
         .await
         .map_err(|e| {
             eprintln!("query failed: {e}");
-            UploadError::Internal
+            AudioError::Internal
         })?;
 
     Ok(StatusCode::NO_CONTENT)
@@ -526,7 +605,7 @@ async fn main() {
         .route("/api/auth/logout", post(logout))
         .route("/api/auth/me", get(me))
         .route("/api/audio", post(upload_audio).get(list_audio))
-        .route("/api/audio/{id}", delete(delete_audio))
+        .route("/api/audio/{id}", get(download_audio).delete(delete_audio))
         .with_state(app_state);
 
     let port: u16 = std::env::var("PORT")
