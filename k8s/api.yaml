@@ -58,6 +58,22 @@ spec:
             - name: PGDATABASE
               valueFrom:
                 configMapKeyRef: { name: monke-app-db, key: database }
+            # The bucket-scoped Garage credentials this app's own key can read/write. The
+            # `endpoint` key (not `endpoint_external`) is the in-cluster one: the api talks
+            # to Garage itself rather than handing a URL to the browser, since Garage has no
+            # public Ingress.
+            - name: S3_ENDPOINT
+              valueFrom:
+                secretKeyRef: { name: monke-app-garage, key: endpoint }
+            - name: S3_BUCKET
+              valueFrom:
+                secretKeyRef: { name: monke-app-garage, key: bucket }
+            - name: S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef: { name: monke-app-garage, key: access_key }
+            - name: S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef: { name: monke-app-garage, key: secret_key }
           readinessProbe:
             httpGet: { path: /healthz, port: 8080 }
             periodSeconds: 5
