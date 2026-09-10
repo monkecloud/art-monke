@@ -16,7 +16,8 @@ use axum::{routing::get, routing::post, Json, Router};
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use futures::{Stream, StreamExt, TryStreamExt};
 use monke_common::targets::{
-    progress_key, target_from_progress_key, PROGRESS_FAILED, PROGRESS_READY,
+    derivative_key, progress_key, target_column, target_from_progress_key, PROGRESS_FAILED,
+    PROGRESS_READY,
 };
 use monke_common::{redis_client, S3Store, TARGETS};
 use serde::{Deserialize, Serialize};
@@ -776,9 +777,29 @@ fn sanitize_filename_header(name: &str) -> String {
         .collect()
 }
 
+#[derive(Deserialize)]
+struct DownloadQuery {
+    // Absent means the original, which is what the Download link serves. The player always
+    // names a tier — it never plays the source.
+    tier: Option<String>,
+}
+
+// A derivative is a different file from the original, so it should not claim the original's
+// name if anyone saves it: song.flac at 224k saves as song.aac_224.m4a.
+fn derivative_filename(filename: &str, target: &str) -> String {
+    let stem = filename
+        .rsplit_once('.')
+        .map_or(filename, |(stem, _extension)| stem);
+    format!("{stem}.{target}.m4a")
+}
+
 // Proxies the download for the same reason uploads are proxied: Garage has no public
 // Ingress, so a presigned URL handed to the browser would point somewhere it can't reach.
 // Streams the S3 response straight into the api's own response body rather than buffering.
+//
+// Serves either the original or one transcoded tier, chosen by `?tier=`. One handler rather
+// than a second route because everything around the object is identical — the ownership
+// check, the Range forwarding, the streaming — and only the key differs.
 //
 // Forwards a client Range header straight through to Garage and mirrors back whatever
 // Garage answers (206 + Content-Range, or a plain 200) rather than parsing ranges itself —
@@ -790,21 +811,56 @@ async fn download_audio(
     State(app): State<AppState>,
     user: AuthUser,
     Path(id): Path<i64>,
+    Query(query): Query<DownloadQuery>,
     headers: axum::http::HeaderMap,
 ) -> Result<Response, AudioError> {
-    let row: Option<(String, String)> = sqlx::query_as(
-        "SELECT s3_key, filename FROM audio_files WHERE id = $1 AND user_id = $2 AND status = 'uploaded'",
-    )
-    .bind(id)
-    .bind(user.id)
-    .fetch_optional(&app.pool)
-    .await
-    .map_err(|e| {
-        eprintln!("query failed: {e}");
-        AudioError::Internal
-    })?;
+    let (key, filename) = match query.tier.as_deref() {
+        None => {
+            let row: Option<(String, String)> = sqlx::query_as(
+                "SELECT s3_key, filename FROM audio_files
+                 WHERE id = $1 AND user_id = $2 AND status = 'uploaded'",
+            )
+            .bind(id)
+            .bind(user.id)
+            .fetch_optional(&app.pool)
+            .await
+            .map_err(|e| {
+                eprintln!("query failed: {e}");
+                AudioError::Internal
+            })?;
 
-    let (key, filename) = row.ok_or(AudioError::NotFound)?;
+            row.ok_or(AudioError::NotFound)?
+        }
+        Some(target) => {
+            // An unknown tier is indistinguishable from a file that does not exist, as far as
+            // the caller is concerned.
+            let column = target_column(target).ok_or(AudioError::NotFound)?;
+
+            // The flag is part of the WHERE rather than checked afterwards, so one query
+            // covers ownership, upload status *and* whether this tier has actually been
+            // written — a tier that is not ready yet simply matches no row and 404s.
+            // `column` is a &'static str from a fixed list, because an identifier cannot be a
+            // bind parameter.
+            let row: Option<(String, String)> = sqlx::query_as(&format!(
+                "SELECT s3_key, filename FROM audio_files
+                 WHERE id = $1 AND user_id = $2 AND status = 'uploaded' AND {column}"
+            ))
+            .bind(id)
+            .bind(user.id)
+            .fetch_optional(&app.pool)
+            .await
+            .map_err(|e| {
+                eprintln!("query failed: {e}");
+                AudioError::Internal
+            })?;
+
+            let (s3_key, filename) = row.ok_or(AudioError::NotFound)?;
+            (
+                derivative_key(&s3_key, target),
+                derivative_filename(&filename, target),
+            )
+        }
+    };
 
     // A Range that isn't valid UTF-8 is not a range Garage would honour either, so dropping
     // it here just means the client gets the whole object back, as it would have anyway.

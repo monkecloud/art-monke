@@ -24,12 +24,15 @@ function FileRow({
   onDelete,
 }: {
   file: AudioFile
-  onPlay: (file: AudioFile) => void
+  onPlay: (file: AudioFile, readyTargets: string[]) => void
   onDelete: (id: number) => void
 }) {
   const states = useTranscodeStates(file)
 
   const uploaded = file.status === 'uploaded'
+  // Ascending, because `states` is. The player is never given the source file, so until one
+  // tier has landed there is nothing to play — and Play says so rather than misleading.
+  const readyTargets = states.filter((s) => s.state === 'ready').map((s) => s.target)
   const allReady = states.length > 0 && states.every((s) => s.state === 'ready')
   const inFlight = states.some((s) => s.state === 'pending' || s.state === 'running')
   const anyFailed = states.some((s) => s.state === 'failed')
@@ -51,7 +54,15 @@ function FileRow({
         {badge && <span className={`status-badge ${badge.className}`}>{badge.text}</span>}
         {uploaded && (
           <>
-            <button type="button" className="link" onClick={() => onPlay(file)}>
+            <button
+              type="button"
+              className="link"
+              disabled={readyTargets.length === 0}
+              title={
+                readyTargets.length === 0 ? 'Waiting for the first transcode to finish' : undefined
+              }
+              onClick={() => onPlay(file, readyTargets)}
+            >
               Play
             </button>
             <a className="link" href={`/api/audio/${file.id}`} download={file.filename}>
@@ -99,7 +110,7 @@ export function FileList({
 }: {
   files: AudioFile[]
   uploads: PendingUpload[]
-  onPlay: (file: AudioFile) => void
+  onPlay: (file: AudioFile, readyTargets: string[]) => void
   onDelete: (id: number) => void
 }) {
   if (files.length === 0 && uploads.length === 0) {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { AudioFile } from './audioFiles'
 
 function formatTime(seconds: number): string {
@@ -43,19 +43,34 @@ function storeVolume(volume: number) {
   }
 }
 
+// `aac_128` -> `128k`.
+function tierLabel(target: string): string {
+  return `${target.replace(/^aac_/, '')}k`
+}
+
 // Mounted once, keyed on file.id by the caller so switching tracks remounts it fresh
 // (new <audio> element, reset time/duration state) instead of trying to patch one up.
 //
 // That remount is why volume is read from storage rather than just held in state: every
 // track change throws this component's state away, so a plain useState(1) would snap the
 // slider back to full on each new song as well as on each page load.
-export function Player({ file }: { file: AudioFile }) {
+//
+// `readyTargets` is ascending, and never empty: the caller only offers Play once a tier
+// exists, because the source audio is never played. That is the whole point of transcoding —
+// the source can be a 1GB WAV, while every tier is a faststart MP4 that seeks properly.
+export function Player({ file, readyTargets }: { file: AudioFile; readyTargets: string[] }) {
   const [isPlaying, setIsPlaying] = useState(true)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
   // Passed as a function so storage is read once on mount, not on every render.
   const [volume, setVolume] = useState(readStoredVolume)
   const [audioEl, setAudioEl] = useState<HTMLAudioElement | null>(null)
+  // Highest available, which is the last one: readyTargets is in ascending-bitrate order.
+  const [tier, setTier] = useState(() => readyTargets[readyTargets.length - 1])
+  // Where to pick playback back up after a tier change swaps the element's src out from
+  // under it. A ref, not state: it is consumed once, by an event handler, and re-rendering
+  // on it would be pointless.
+  const resumeRef = useRef<{ time: number; playing: boolean } | null>(null)
 
   // volume is not a prop on <audio>, so it has to be assigned to the element. Keyed on
   // audioEl as well as volume because the element arrives via ref *after* the first render:
@@ -81,6 +96,16 @@ export function Player({ file }: { file: AudioFile }) {
     audioEl.currentTime = Number(e.target.value)
   }
 
+  // Changing tier reloads the media, which resets position and pauses. Both are captured
+  // first and restored once the new tier has enough metadata to seek — so switching bitrate
+  // mid-song is continuous rather than starting the track over.
+  function changeTier(next: string) {
+    if (audioEl) {
+      resumeRef.current = { time: audioEl.currentTime, playing: !audioEl.paused }
+    }
+    setTier(next)
+  }
+
   function changeVolume(e: React.ChangeEvent<HTMLInputElement>) {
     const v = Number(e.target.value)
     setVolume(v)
@@ -97,12 +122,22 @@ export function Player({ file }: { file: AudioFile }) {
           whatever Garage answers. */}
       <audio
         ref={setAudioEl}
-        src={`/api/audio/${file.id}`}
+        // Always a tier, never the source.
+        src={`/api/audio/${file.id}?tier=${tier}`}
         autoPlay
         onPlay={() => setIsPlaying(true)}
         onPause={() => setIsPlaying(false)}
         onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
-        onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
+        onLoadedMetadata={(e) => {
+          setDuration(e.currentTarget.duration)
+          const resume = resumeRef.current
+          if (!resume) return
+          resumeRef.current = null
+          e.currentTarget.currentTime = resume.time
+          // Volume survives a src change on its own — it is a property of the element, not
+          // of the media — so only position and play state need restoring here.
+          if (resume.playing) void e.currentTarget.play()
+        }}
         onEnded={() => setIsPlaying(false)}
       />
       <span className="player-name">{file.filename}</span>
@@ -123,6 +158,22 @@ export function Player({ file }: { file: AudioFile }) {
         onChange={seek}
       />
       <span className="player-time">{formatTime(duration)}</span>
+      {/* One button per available tier rather than a <select>, so the bitrate in use is
+          readable at a glance instead of needing to be opened. A single ready tier still
+          renders, because "what am I hearing" is worth answering even without a choice. */}
+      <div className="player-tiers">
+        {readyTargets.map((target) => (
+          <button
+            key={target}
+            type="button"
+            className={`player-tier${target === tier ? ' player-tier-active' : ''}`}
+            aria-pressed={target === tier}
+            onClick={() => changeTier(target)}
+          >
+            {tierLabel(target)}
+          </button>
+        ))}
+      </div>
       <input
         type="range"
         className="player-volume"

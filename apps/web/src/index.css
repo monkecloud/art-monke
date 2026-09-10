@@ -220,6 +220,39 @@ input {
   flex-shrink: 0;
 }
 
+/* Which bitrate is playing, and the others available. Sits next to the volume slider rather
+   than by the track name, because it is a playback control, not metadata about the file. */
+.player-tiers {
+  display: flex;
+  flex-shrink: 0;
+  gap: 0.15rem;
+}
+
+.player-tier {
+  font: inherit;
+  font-size: 0.7rem;
+  font-family: ui-monospace, monospace;
+  padding: 0.15rem 0.35rem;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 4px;
+  background: none;
+  color: rgba(255, 255, 255, 0.65);
+  cursor: pointer;
+}
+
+.player-tier-active {
+  border-color: #fff;
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+}
+
+/* Play is unavailable until a tier exists, since the source is never played. */
+.link:disabled {
+  color: #6b7280;
+  text-decoration: none;
+  cursor: default;
+}
+
 /* Transcode tiers: one row of three, each a label, a bar and a state. Laid out on a grid so
    the three bars line up with each other regardless of how wide the state text is. */
 .transcodes {

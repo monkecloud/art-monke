@@ -15,7 +15,9 @@ type Session =
 export default function App() {
   const [session, setSession] = useState<Session>({ kind: 'loading' })
   const [files, setFiles] = useState<AudioFile[]>([])
-  const [nowPlaying, setNowPlaying] = useState<AudioFile | null>(null)
+  // The tiers are captured at the moment Play is clicked, which is live state from the row's
+  // own stream rather than whatever the last list fetch happened to say.
+  const [nowPlaying, setNowPlaying] = useState<{ file: AudioFile; ready: string[] } | null>(null)
   const [uploads, setUploads] = useState<PendingUpload[]>([])
   const toasts = useToasts()
 
@@ -141,11 +143,11 @@ export default function App() {
       <FileList
         files={files}
         uploads={uploads}
-        onPlay={setNowPlaying}
+        onPlay={(file, ready) => setNowPlaying({ file, ready })}
         onDelete={(id) => {
           deleteAudioFile(id)
             .then(() => {
-              setNowPlaying((f) => (f?.id === id ? null : f))
+              setNowPlaying((p) => (p?.file.id === id ? null : p))
               refreshFiles()
             })
             .catch(() => {
@@ -158,7 +160,13 @@ export default function App() {
       />
 
       <ToastStack toasts={toasts.toasts} onDismiss={toasts.dismiss} />
-      {nowPlaying && <Player key={nowPlaying.id} file={nowPlaying} />}
+      {nowPlaying && (
+        <Player
+          key={nowPlaying.file.id}
+          file={nowPlaying.file}
+          readyTargets={nowPlaying.ready}
+        />
+      )}
     </main>
   )
 }
