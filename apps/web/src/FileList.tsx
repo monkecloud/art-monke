@@ -19,7 +19,7 @@ function transcodeBadge(
   return null
 }
 
-// Length and age, under the filename. Both are omitted rather than rendered as a
+// Length and upload time, under the filename. Both are omitted rather than rendered as a
 // placeholder when unavailable: a file has no duration until a worker probes it, and a
 // dash where a number belongs reads as data rather than as its absence.
 function FileMeta({ file }: { file: AudioFile }) {
@@ -30,10 +30,7 @@ function FileMeta({ file }: { file: AudioFile }) {
   return (
     <div className="file-meta">
       {duration && <span className="file-duration">{duration}</span>}
-      {uploaded && (
-        // The relative label is not on a timer, so the exact timestamp stays reachable.
-        <span title={uploaded.exact}>{uploaded.label}</span>
-      )}
+      {uploaded && <span>{uploaded}</span>}
     </div>
   )
 }
@@ -65,7 +62,7 @@ function FileRow({
     ? transcodeBadge(inFlight, anyFailed)
     : { className: `status-${file.status}`, text: file.status }
 
-  // Bars disappear along with the badge. A row of three full green bars conveys nothing that
+  // Bars disappear along with the badge. A row of full green bars conveys nothing that
   // a playable row does not already.
   const showBars = uploaded && states.length > 0 && !allReady
 

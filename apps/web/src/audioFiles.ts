@@ -14,7 +14,7 @@ export type AudioFile = {
   created_at: string
   // Absent until a worker has probed the source, and on files that predate the column.
   duration_seconds: number | null
-  // Always all three tiers, in ascending-bitrate order.
+  // Always every tier the api builds, in ascending-bitrate order.
   transcodes: TranscodeState[]
 }
 

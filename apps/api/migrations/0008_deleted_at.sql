@@ -1,0 +1,22 @@
+-- When the row was deleted, as opposed to `created_at`, which is when it was uploaded. The two
+-- are unrelated -- a file can be uploaded in January and deleted in June -- and nothing
+-- recorded the latter before now.
+--
+-- Nullable, no backfill, and only ever set on the 'delete_pending' -> 'deleted' transition. A
+-- row that has never been deleted has no deletion time, and NULL says that better than a
+-- sentinel would.
+ALTER TABLE audio_files ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+
+-- 'deleted' rows are kept indefinitely, and not for the reason 0004_audio_files.sql gives.
+-- History is not being kept; this supersedes that comment.
+--
+-- The row is a tombstone holding `s3_key`, which is the only handle on all four objects a file
+-- can have in the bucket -- the source, plus three derivatives at keys derived from it by
+-- monke_common::targets::derivative_key and stored nowhere. A worker that is partitioned,
+-- paused or draining can still PUT a derivative after the file has been fully processed, and
+-- without the row nothing would know the key to remove.
+--
+-- So there is no retention pass ageing these rows out: any deadline on the row is a deadline
+-- on that handle, and a late write past it would leak with nothing pointing at it.
+--
+-- See docs/delete-lifecycle.md.

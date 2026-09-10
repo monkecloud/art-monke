@@ -2,7 +2,7 @@
 //!
 //! Nothing here is an abstraction for its own sake — each piece is something both binaries
 //! need to do identically, where two copies could drift apart in a way nothing would catch:
-//! which database they connect to, which bucket they sign against, and which three transcode
+//! which database they connect to, which bucket they sign against, and which transcode
 //! targets exist.
 
 pub mod cache;

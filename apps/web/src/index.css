@@ -1,6 +1,9 @@
 :root {
   color-scheme: light dark;
-  font: 16px/1.5 system-ui, sans-serif;
+  /* Monospace throughout. ui-monospace picks up the platform's own UI mono (SF Mono,
+     Cascadia) before falling back, and the generic keyword last is what keeps this honest
+     on a machine that has neither. */
+  font: 16px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 body {
@@ -10,7 +13,9 @@ body {
 main {
   margin: 4rem auto;
   max-width: 32rem;
-  padding: 0 1rem 4rem;
+  /* Clear of the player bar, which is fixed to the bottom and two rows tall whenever a
+     track is loaded. */
+  padding: 0 1rem 7rem;
 }
 
 button {
@@ -33,7 +38,6 @@ dt {
 
 dd {
   margin: 0;
-  font-family: ui-monospace, monospace;
 }
 
 .muted {
@@ -123,12 +127,25 @@ input {
   background: rgba(107, 114, 128, 0.14);
 }
 
-/* The track loaded into the player, marked on the filename rather than on the row. Colour
-   rather than a background: the row's background already means "the pointer is here", and
-   two tints in the same place read as one confused state. The accent is the one links use. */
+/* The track loaded into the player. A tint of the accent rather than more of the hover grey
+   above: the two states overlap constantly, so they are told apart by hue rather than by
+   strength. Translucent for the same reason the hover is — it has to sit on either ground. */
+.file-row-playing {
+  background: rgba(37, 99, 235, 0.14);
+}
+
+/* Hovering the row that is already playing still has to acknowledge the pointer, so the
+   playing tint deepens instead of the hover simply replacing it. Both classes are named to
+   clear the plain hover rule above, which is otherwise the more specific of the two. */
+.file-row-playing.file-row-playable:hover,
+.file-row-playing.file-row-playable:focus-visible {
+  background: rgba(37, 99, 235, 0.22);
+}
+
+/* Weight rather than colour on the name: the row tint already carries the accent, and
+   repeating it on the text reads as a link. */
 .file-row-playing .file-name {
-  color: #2563eb;
-  font-weight: 500;
+  font-weight: 700;
 }
 
 /* The file and its controls: what .file-row itself used to be, before the transcode tiers
@@ -146,7 +163,7 @@ input {
   white-space: nowrap;
 }
 
-/* Length and upload age, under the filename. Sits at the same left edge as the name so the
+/* Length and upload time, under the filename. Sits at the same left edge as the name so the
    two read as one block, and is dimmed to the same grey as the transcode bars beneath it —
    it is the row's smallest-print information, not a second heading. */
 .file-meta {
@@ -164,9 +181,9 @@ input {
   margin-right: 0.5rem;
 }
 
-/* Lining figures, so a column of durations stays vertically aligned digit for digit. */
+/* The page is monospace, but that alone does not promise lining figures — this is what
+   keeps a column of durations aligned digit for digit. */
 .file-duration {
-  font-family: ui-monospace, monospace;
   font-variant-numeric: tabular-nums;
 }
 
@@ -241,16 +258,22 @@ input {
   bottom: 0;
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  /* Wraps at every width, because the name takes a whole row below. The row gap is the
+     smaller of the two: the two rows are one control surface, not two. */
+  flex-wrap: wrap;
+  gap: 0.35rem 0.75rem;
   padding: 0.6rem 1rem;
   background: #111827;
   color: #fff;
   box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.2);
 }
 
+/* A row of its own, above the controls. It is the one part of the bar that is content
+   rather than a control, and squeezed onto the same line it was the part that lost —
+   ellipsised to 12rem so the transport, scrubber, tiers and volume could fit beside it.
+   The ellipsis stays for the genuinely long filename, but now it has the full width first. */
 .player-name {
-  flex-shrink: 0;
-  max-width: 12rem;
+  flex: 1 0 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -260,6 +283,13 @@ input {
   display: flex;
   flex-shrink: 0;
   gap: 0.75rem;
+}
+
+/* Shorter than the page's default button. They sit in a bar that is already two rows tall,
+   and nothing about a transport control needs the height of a form button. Horizontal
+   padding is untouched — it is the height that was out of proportion, not the width. */
+.player-transport button {
+  padding-block: 0.2rem;
 }
 
 /* The elapsed/seek/duration trio. It is the only part of the bar that should absorb the
@@ -275,8 +305,8 @@ input {
 
 .player-time {
   flex-shrink: 0;
-  font-family: ui-monospace, monospace;
   font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
 }
 
 .player-seek {
@@ -300,7 +330,6 @@ input {
 .player-tier {
   font: inherit;
   font-size: 0.7rem;
-  font-family: ui-monospace, monospace;
   padding: 0.15rem 0.35rem;
   border: 1px solid rgba(255, 255, 255, 0.3);
   border-radius: 4px;
@@ -315,8 +344,9 @@ input {
   color: #fff;
 }
 
-/* Transcode tiers: one row of three, each a label, a bar and a state. Laid out on a grid so
-   the three bars line up with each other regardless of how wide the state text is. */
+/* Transcode tiers: one row per tier, each a label, a bar and a state. Laid out on a grid so
+   the bars line up with each other regardless of how wide the state text is -- which matters
+   again the moment the ladder is more than one tier. */
 .transcodes {
   display: grid;
   grid-template-columns: 2.5rem 1fr 3.5rem;
@@ -330,10 +360,6 @@ input {
   display: grid;
   grid-column: 1 / -1;
   grid-template-columns: subgrid;
-}
-
-.tier-label {
-  font-family: ui-monospace, monospace;
 }
 
 .tier-track {
@@ -391,7 +417,7 @@ input {
 }
 
 /* Phones. The player bar is the one piece of this UI that cannot survive being narrowed:
-   at 360px its nine controls leave the seek bar a few pixels wide. It wraps into three
+   at 360px its controls leave the seek bar a few pixels wide. It wraps into three
    rows instead — filename, scrubber, then the buttons. */
 @media (max-width: 40rem) {
   main {
@@ -416,7 +442,7 @@ input {
 
   .player-bar {
     flex-wrap: wrap;
-    /* The column gap is tight because the third row — two buttons plus three tier chips —
+    /* The column gap is tight because the third row — two buttons plus a tier chip each —
        has to fit within 320px, the narrowest phone worth supporting. */
     gap: 0.5rem;
     padding: 0.5rem 0.75rem;
@@ -429,8 +455,6 @@ input {
      above the transport rather than between it and the tier buttons — without it the
      two full-width rows split the buttons onto a row each and the bar grows to four. */
   .player-name {
-    flex: 1 0 100%;
-    max-width: none;
     font-size: 0.9rem;
     order: 1;
   }
@@ -463,10 +487,10 @@ input {
     order: 4;
   }
 
-  /* Vertical padding for the touch target, horizontal pared back to the minimum: the
-     three chips plus the two transport buttons are 8px over a 320px line otherwise, and
-     the chips are the secondary control of the two. The labels are a fixed set
-     (64k/128k/224k), so this budget does not move. */
+  /* Vertical padding for the touch target, horizontal pared back to the minimum. Sized when
+     the ladder was 64k/128k/224k, where those three chips plus the two transport buttons ran
+     8px over a 320px line; a single 224k chip clears that easily. Left as it is rather than
+     retuned, because it is what a re-added tier would need again. */
   .player-tier {
     padding: 0.4rem 0.35rem;
   }

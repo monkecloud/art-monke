@@ -491,9 +491,9 @@ async fn upload_audio(
             .finalize(),
     );
 
-    // The flip to 'uploaded' and the three queue rows go in together: a committed 'uploaded'
-    // with no jobs is a file that silently never gets transcoded, and jobs against a row
-    // that never became 'uploaded' are three guaranteed failures.
+    // The flip to 'uploaded' and the queue rows go in together: a committed 'uploaded' with
+    // no jobs is a file that silently never gets transcoded, and jobs against a row that
+    // never became 'uploaded' are guaranteed failures.
     let mut tx = app.pool.begin().await.map_err(|e| {
         eprintln!("begin failed: {e}");
         AudioError::Internal
@@ -532,7 +532,7 @@ async fn upload_audio(
     };
 
     // Zero means exactly that lost race: the row is already 'deleted' (or 'delete_pending')
-    // and queueing work against it would only produce three jobs with nothing to read.
+    // and queueing work against it would only produce jobs with nothing to read.
     if flipped.rows_affected() == 1 {
         let targets: Vec<String> = TARGETS.iter().map(|t| t.to_string()).collect();
         // ON CONFLICT DO NOTHING against the UNIQUE (audio_file_id, target): harmless
@@ -570,8 +570,8 @@ struct AudioFile {
     // Absent until a worker has probed the source, and on files older than the column. The
     // client shows a length only when there is one.
     duration_seconds: Option<f64>,
-    // Always all three, in TARGETS order, so a client can render a fixed set of rows rather
-    // than discovering which tiers exist from the payload.
+    // Always every entry of TARGETS, in its order, so a client can render a fixed set of rows
+    // rather than discovering which tiers exist from the payload.
     transcodes: Vec<TranscodeState>,
 }
 
@@ -914,48 +914,47 @@ async fn download_audio(
     })
 }
 
-// Soft-delete: the S3 object is actually removed, but the row stays around at status
-// 'deleted' rather than being dropped, so history isn't lost.
+// Marks the file for deletion and returns. Nothing here touches S3: the objects, the queue
+// rows and eventually this row itself are cleaned up by the worker's sweep.
+//
+// Deliberately not an inline delete. A DELETE to Garage from here cannot be made atomic with
+// what a worker is doing, so it could never stop a transcode that is already running from
+// writing its derivative afterwards -- and it made the button fail outright whenever Garage
+// hiccuped, leaving the file visible to someone who had asked for it gone. Marking intent is
+// one Postgres write that cannot half-fail, and the sweep is what actually converges the
+// bucket. See docs/delete-lifecycle.md.
 async fn delete_audio(
     State(app): State<AppState>,
     user: AuthUser,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, AudioError> {
-    let key: Option<(String,)> = sqlx::query_as(
-        "SELECT s3_key FROM audio_files WHERE id = $1 AND user_id = $2 AND status != 'deleted'",
+    // Guarded on the two live statuses rather than `!= 'deleted'`, so a second click on a row
+    // that is already mid-sweep is a no-op rather than something that re-enters the pipeline
+    // or resets a deleted_at the retention pass is counting from.
+    let marked = sqlx::query(
+        "UPDATE audio_files SET status = 'delete_pending'
+         WHERE id = $1 AND user_id = $2 AND status IN ('uploading', 'uploaded')",
     )
     .bind(id)
     .bind(user.id)
-    .fetch_optional(&app.pool)
+    .execute(&app.pool)
     .await
     .map_err(|e| {
         eprintln!("query failed: {e}");
         AudioError::Internal
     })?;
 
-    let (key,) = key.ok_or(AudioError::NotFound)?;
-
-    // S3 DELETE is idempotent, so this is fine even for a row that's still 'uploading' and
-    // never actually got an object written.
-    if let Err(e) = app.s3.delete(&key).await {
-        eprintln!("s3 delete failed: {e}");
-        return Err(AudioError::UploadFailed);
+    // Same 404-for-someone-else's-id reasoning as download_audio: a row that is not the
+    // caller's and a row that is already going away are not distinguished here.
+    if marked.rows_affected() == 0 {
+        return Err(AudioError::NotFound);
     }
-
-    sqlx::query("UPDATE audio_files SET status = 'deleted' WHERE id = $1")
-        .bind(id)
-        .execute(&app.pool)
-        .await
-        .map_err(|e| {
-            eprintln!("query failed: {e}");
-            AudioError::Internal
-        })?;
 
     Ok(StatusCode::NO_CONTENT)
 }
 
 // Streams one file's transcode progress as it happens, so a client watching an upload does
-// not have to poll list_audio for three tiers.
+// not have to poll list_audio for it.
 //
 // Ownership is checked exactly the way download_audio checks it, and the same way: 404 for a
 // row that isn't the caller's, so the endpoint never confirms that someone else's id exists.
@@ -991,7 +990,7 @@ async fn audio_progress(
             AudioError::Internal
         })?;
 
-    // One PSUBSCRIBE rather than three SUBSCRIBEs: the pattern covers every tier of this
+    // One PSUBSCRIBE rather than a SUBSCRIBE per tier: the pattern covers every tier of this
     // file, including the ones whose job has not been claimed yet.
     let messages = match subscribe_progress(&app.redis, &progress_key(id, "*")).await {
         Ok(stream) => stream.boxed(),
