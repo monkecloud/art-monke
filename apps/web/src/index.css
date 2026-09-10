@@ -18,6 +18,14 @@ main {
   padding: 0 1rem 7rem;
 }
 
+/* The pages that are a file list. Wider than the reading measure the rest of the app is set
+   to, because a row is a filename on the left and its length and age on the right, and at
+   32rem those two ends are close enough to read as one crowded line. The login page and the
+   loading and error states keep the narrow default. */
+main.library {
+  max-width: 52rem;
+}
+
 button {
   font: inherit;
   padding: 0.4rem 0.9rem;
@@ -120,9 +128,18 @@ input {
 }
 
 .file-row {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
+  /* One line per file on a wide screen — the name and its controls in the first column, the
+     length and upload time in the second, and the transcode bars across both below. A grid
+     rather than a wrapping flex row: a long filename made that row wrap, dropping the meta
+     onto a line of its own, and `minmax(0, 1fr)` is what makes the name column give way and
+     ellipsise instead. */
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.4rem 0.75rem;
+  /* The list is itself a flex column, and without this a row is allowed to stretch to the
+     width of its own longest filename and take the whole page sideways with it. */
+  min-width: 0;
   /* Side padding so the hover and playing tints below have something to fill, pulled back
      out by the negative margin so the text still lines up with the rest of the page. */
   padding: 0.5rem 0.75rem;
@@ -173,10 +190,17 @@ input {
   display: flex;
   align-items: center;
   gap: 0.75rem;
+  /* Its grid track is already the one that absorbs the row's slack. This is what lets it be
+     squeezed past its own content, which is in turn what lets the name below ellipsise. */
+  min-width: 0;
 }
 
+/* Sized to the filename rather than to the row, so the badge and Delete stay next to the
+   name on the left instead of being flung across a 52rem row to meet the meta. It still
+   gives way first when the row is too narrow for everything. */
 .file-name {
-  flex: 1;
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -190,7 +214,14 @@ input {
   align-items: center;
   gap: 0.5rem;
   font-size: 0.75rem;
-  color: #6b7280;
+  /* A step up from the #6b7280 the transcode bars use. The bars are scaffolding that goes
+     away once a file is ready; these two numbers are permanent, so they are lifted just
+     clear of that grey while staying quieter than the filename. */
+  color: #8a919f;
+  /* Never wraps: it is short, and the row's right edge is a column of durations and dates
+     that only reads as one if every row ends the same way. */
+  justify-self: end;
+  white-space: nowrap;
 }
 
 /* A separator before every item but the first, so the line reads correctly whether or not
@@ -204,6 +235,13 @@ input {
    keeps a column of durations aligned digit for digit. */
 .file-duration {
   font-variant-numeric: tabular-nums;
+}
+
+/* Whatever sits beside the name keeps its size; the name is what shortens. Both are already
+   as small as they read, and a badge squeezed out of its own pill says nothing. */
+.file-main > .status-badge,
+.file-main > .link {
+  flex: none;
 }
 
 .status-badge {
@@ -338,29 +376,65 @@ input {
   flex-shrink: 0;
 }
 
-/* Which bitrate is playing, and the others available. Sits next to the volume slider rather
-   than by the track name, because it is a playback control, not metadata about the file. */
-.player-tiers {
+/* Playback speed: a readout between two steppers, where the bitrate chips used to be. Next
+   to the volume slider rather than by the track name, because it is a playback control and
+   not metadata about the file. */
+.player-speed {
   display: flex;
+  align-items: center;
   flex-shrink: 0;
-  gap: 0.15rem;
+  gap: 0.25rem;
+  /* Fenced off from the scrubber on one side and the volume slider on the other. It is a
+     third thing rather than part of either, and abutting both it read as whichever it
+     happened to be nearer. */
+  border-inline: 1px solid rgba(255, 255, 255, 0.2);
+  padding-inline: 0.75rem;
 }
 
-.player-tier {
+/* Says what the number is. Dimmer than the readout beside it, which is the part that
+   changes and so the part worth looking at. */
+.player-speed-label {
+  margin-right: 0.25rem;
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.player-speed-step {
   font: inherit;
-  font-size: 0.7rem;
-  padding: 0.15rem 0.35rem;
+  font-size: 0.8rem;
+  line-height: 1;
+  padding: 0.2rem 0.4rem;
   border: 1px solid rgba(255, 255, 255, 0.3);
   border-radius: 4px;
   background: none;
-  color: rgba(255, 255, 255, 0.65);
+  color: rgba(255, 255, 255, 0.8);
   cursor: pointer;
 }
 
-.player-tier-active {
-  border-color: #fff;
+.player-speed-step:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.15);
   color: #fff;
+}
+
+/* At the ends of the range. Dimmed in place rather than removed: the two are one control,
+   and dropping either would slide the readout sideways at the moment it is being read. */
+.player-speed-step:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* Wide enough for the longest reading it can hold — "102.5%" — so that neither stepper
+   moves as the digits change, and lining figures so the number itself does not jitter. */
+.player-speed-value {
+  min-width: 3.5rem;
+  text-align: center;
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A line of its own under the name and meta, across both of the row's columns. */
+.file-row > .transcodes {
+  grid-column: 1 / -1;
 }
 
 /* Transcode tiers: one row per tier, each a label, a bar and a state. Laid out on a grid so
@@ -448,6 +522,16 @@ input {
     padding-bottom: 11rem;
   }
 
+  /* No room for a name at one end and its meta at the other, so the row drops to a single
+     column and its three parts stack: name, then meta, then bars. */
+  .file-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .file-meta {
+    justify-self: start;
+  }
+
   /* Same treatment as the player bar below: the name gets a line to itself rather than
      being ellipsised down to nothing so that three links can sit beside it. */
   .file-main {
@@ -455,8 +539,11 @@ input {
     gap: 0.5rem 0.75rem;
   }
 
+  /* A full line to itself rather than being ellipsised down to nothing beside the badge and
+     Delete — but allowed to shrink, so a long filename truncates instead of pushing the row
+     wider than the screen. */
   .file-name {
-    flex: 1 0 100%;
+    flex: 0 1 100%;
   }
 
   .player-bar {
@@ -499,19 +586,29 @@ input {
     padding: 0.5rem 0.8rem;
   }
 
-  /* Far end of the controls row, opposite the transport buttons. */
-  .player-tiers {
+  /* Far end of the controls row, opposite the transport buttons. No rules here: the volume
+     slider is gone at this width, so the right-hand one would fence off the edge of the
+     screen, and the left one would sit alone in the gap rather than between two things. */
+  .player-speed {
     margin-left: auto;
-    gap: 0.25rem;
     order: 4;
+    border-inline: 0;
+    padding-inline: 0;
   }
 
-  /* Vertical padding for the touch target, horizontal pared back to the minimum. Sized when
-     the ladder was 64k/128k/224k, where those three chips plus the two transport buttons ran
-     8px over a 320px line; a single 224k chip clears that easily. Left as it is rather than
-     retuned, because it is what a re-added tier would need again. */
-  .player-tier {
-    padding: 0.4rem 0.35rem;
+  /* Dropped for the same reason the volume slider below is: the controls row has to fit
+     within 320px, and the word is what tips it over into a fourth row there. The steppers
+     either side of a percentage are legible without it, and their aria-labels are untouched,
+     so nothing is lost to a screen reader. */
+  .player-speed-label {
+    display: none;
+  }
+
+  /* Vertical padding for the touch target, horizontal pared back to the minimum: the two
+     steppers and the readout share the controls row with both transport buttons, and that
+     row has to fit within 320px. */
+  .player-speed-step {
+    padding: 0.4rem 0.5rem;
   }
 
   /* Dropped rather than shrunk: it is the first control to become unusable at this width,

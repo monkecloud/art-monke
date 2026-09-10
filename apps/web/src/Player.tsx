@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type { AudioFile } from './audioFiles'
 import { formatDuration } from './format'
 
@@ -43,9 +43,33 @@ function storeVolume(volume: number) {
   }
 }
 
-// `aac_128` -> `128k`.
-function tierLabel(target: string): string {
-  return `${target.replace(/^aac_/, '')}k`
+// Playback speed, in 2.5% steps either side of 100%. Held as a step count rather than as a
+// rate, because 2.5 * n is exact in binary where repeatedly taking 0.025 off a rate is not —
+// eight steps down that way lands on 0.8000000000000002 and the readout has to hide it.
+const SPEED_STEP_PERCENT = 2.5
+// Half speed to one and a half. Chrome mutes the audio outright once the rate leaves the
+// range it is willing to resample, and there is no signal back when it does — so the ends
+// are set well inside it rather than at it.
+const MIN_SPEED_STEP = -20
+const MAX_SPEED_STEP = 20
+
+function speedPercent(step: number): number {
+  return 100 + step * SPEED_STEP_PERCENT
+}
+
+// "100%", "97.5%". The trailing ".0" is dropped rather than padded — the readout is given a
+// fixed width in CSS instead, so the buttons either side of it hold still regardless.
+function formatSpeed(percent: number): string {
+  return `${Number.isInteger(percent) ? percent : percent.toFixed(1)}%`
+}
+
+// `preservesPitch` is the standard name; the prefixed pair is what browsers older than
+// Chrome 109 / Safari 16.4 / Firefox 111 answer to. Worth carrying, because the property
+// defaults to *true* — a browser that ignores all three time-stretches instead, which is
+// the one outcome this control exists to avoid.
+type PitchPreserving = HTMLMediaElement & {
+  mozPreservesPitch?: boolean
+  webkitPreservesPitch?: boolean
 }
 
 // What Android puts on the lock screen and in the notification shade. Served from
@@ -100,11 +124,16 @@ export function Player({
   const [volume, setVolume] = useState(readStoredVolume)
   const [audioEl, setAudioEl] = useState<HTMLAudioElement | null>(null)
   // Highest available, which is the last one: readyTargets is in ascending-bitrate order.
-  const [tier, setTier] = useState(() => readyTargets[readyTargets.length - 1])
-  // Where to pick playback back up after a tier change swaps the element's src out from
-  // under it. A ref, not state: it is consumed once, by an event handler, and re-rendering
-  // on it would be pointless.
-  const resumeRef = useRef<{ time: number; playing: boolean } | null>(null)
+  // Fixed at mount: there is one tier today, and a second one landing mid-song should not
+  // reload the element out from under the listener.
+  const [tier] = useState(() => readyTargets[readyTargets.length - 1])
+  // Steps from 100%, not a rate. Deliberately not persisted the way volume is, and reset by
+  // the remount on every track change: volume is how loud the room is, speed is something
+  // done to one particular track.
+  const [speedStep, setSpeedStep] = useState(0)
+  // The two forms it is needed in: one for the readout, one for the element.
+  const percent = speedPercent(speedStep)
+  const rate = percent / 100
 
   // One ref callback feeding both the local state and the caller's ref. Memoised because an
   // inline arrow would be a new callback on every render, and React detaches and reattaches
@@ -124,6 +153,21 @@ export function Player({
   useEffect(() => {
     if (audioEl) audioEl.volume = volume
   }, [audioEl, volume])
+
+  // Same story as volume — not a prop on <audio> — with two wrinkles of its own.
+  // `defaultPlaybackRate` is what loading a resource resets `playbackRate` *to*, so it is
+  // set alongside rather than left at 1. And `preservesPitch` off is the whole point: the
+  // browser resamples instead of time-stretching, so pitch rides down with speed the way it
+  // does on a tape rather than being corrected back up.
+  useEffect(() => {
+    if (!audioEl) return
+    const el = audioEl as PitchPreserving
+    el.preservesPitch = false
+    el.mozPreservesPitch = false
+    el.webkitPreservesPitch = false
+    el.defaultPlaybackRate = rate
+    el.playbackRate = rate
+  }, [audioEl, rate])
 
   // The OS-level media card: Chrome hands this to Android, which is what turns a locked
   // phone or a minimised browser into something with a title, artwork and transport
@@ -244,14 +288,10 @@ export function Player({
     audioEl.currentTime = Number(e.target.value)
   }
 
-  // Changing tier reloads the media, which resets position and pauses. Both are captured
-  // first and restored once the new tier has enough metadata to seek — so switching bitrate
-  // mid-song is continuous rather than starting the track over.
-  function changeTier(next: string) {
-    if (audioEl) {
-      resumeRef.current = { time: audioEl.currentTime, playing: !audioEl.paused }
-    }
-    setTier(next)
+  // Clamped here rather than only on the buttons' disabled state, so holding the key repeat
+  // on a focused button cannot walk past the end of the range.
+  function changeSpeed(steps: number) {
+    setSpeedStep((step) => Math.min(MAX_SPEED_STEP, Math.max(MIN_SPEED_STEP, step + steps)))
   }
 
   function changeVolume(e: React.ChangeEvent<HTMLInputElement>) {
@@ -276,16 +316,7 @@ export function Player({
         onPlay={() => setIsPlaying(true)}
         onPause={() => setIsPlaying(false)}
         onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
-        onLoadedMetadata={(e) => {
-          setDuration(e.currentTarget.duration)
-          const resume = resumeRef.current
-          if (!resume) return
-          resumeRef.current = null
-          e.currentTarget.currentTime = resume.time
-          // Volume survives a src change on its own — it is a property of the element, not
-          // of the media — so only position and play state need restoring here.
-          if (resume.playing) void e.currentTarget.play()
-        }}
+        onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
         onEnded={() => setIsPlaying(false)}
       />
       <span className="player-name">{file.filename}</span>
@@ -314,21 +345,34 @@ export function Player({
         />
         <span className="player-time">{formatTime(duration)}</span>
       </div>
-      {/* One button per available tier rather than a <select>, so the bitrate in use is
-          readable at a glance instead of needing to be opened. A single ready tier still
-          renders, because "what am I hearing" is worth answering even without a choice. */}
-      <div className="player-tiers">
-        {readyTargets.map((target) => (
-          <button
-            key={target}
-            type="button"
-            className={`player-tier${target === tier ? ' player-tier-active' : ''}`}
-            aria-pressed={target === tier}
-            onClick={() => changeTier(target)}
-          >
-            {tierLabel(target)}
-          </button>
-        ))}
+      {/* Varispeed rather than a time-stretch: pitch rides with speed, the way it does when a
+          tape is slowed down. The clock either side of the scrubber goes on reading the
+          file's own duration — at 90% a 3:00 track still says 3:00 and simply takes longer
+          to get there, which is the honest reading of where you are in the file. */}
+      <div className="player-speed">
+        <span className="player-speed-label">Speed</span>
+        <button
+          type="button"
+          className="player-speed-step"
+          aria-label="Slower"
+          disabled={speedStep <= MIN_SPEED_STEP}
+          onClick={() => changeSpeed(-1)}
+        >
+          −
+        </button>
+        {/* Announced on change: the buttons say what they do, but not what they did. */}
+        <span className="player-speed-value" aria-live="polite">
+          {formatSpeed(percent)}
+        </span>
+        <button
+          type="button"
+          className="player-speed-step"
+          aria-label="Faster"
+          disabled={speedStep >= MAX_SPEED_STEP}
+          onClick={() => changeSpeed(1)}
+        >
+          +
+        </button>
       </div>
       <input
         type="range"
