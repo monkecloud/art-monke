@@ -74,6 +74,13 @@ spec:
             - name: S3_SECRET_KEY
               valueFrom:
                 secretKeyRef: { name: monke-app-garage, key: secret_key }
+            # Transcode progress, which the worker writes and /api/audio/{id}/progress streams
+            # out. Read-only as far as this pod is concerned, and never load-bearing: every
+            # read degrades to "no percentage yet" if the cache is down. Host and port are
+            # constants in the code, like S3_REGION — this repo's own redis.yaml sets them.
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: monke-app-redis, key: password }
           readinessProbe:
             httpGet: { path: /healthz, port: 8080 }
             periodSeconds: 5

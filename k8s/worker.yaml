@@ -1,0 +1,94 @@
+# The transcode worker. Consumes the transcode_jobs queue in Postgres, shells out to ffmpeg,
+# writes each .m4a derivative back to the bucket. Not web-facing, so unlike web.yaml and
+# api.yaml there is no Service and no Ingress path.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: monke-app-worker
+  labels: { app: monke-app-worker }
+spec:
+  # One per node. The worker takes one job at a time on purpose — the unit of scale is this
+  # number, which is what keeps its two scratch paths fixed and unshared.
+  replicas: 4
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # maxSurge 0, unlike web/api. With replicas equal to the node count and hard
+      # one-per-node anti-affinity below, a surge pod has no node left to land on: it would
+      # sit Pending and the rollout would never finish. So pods are replaced in place, one at
+      # a time. Nothing is serving traffic here, so there is no availability to protect.
+      maxSurge: 0
+      maxUnavailable: 1
+  selector:
+    matchLabels: { app: monke-app-worker }
+  template:
+    metadata:
+      labels: { app: monke-app-worker }
+    spec:
+      # Spreads the transcode load over every node rather than stacking four ffmpeg processes
+      # onto one. Nodes are 4-core, so one worker per node leaves the rest of the node alone.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels: { app: monke-app-worker }
+              topologyKey: kubernetes.io/hostname
+      # SIGTERM makes the worker stop claiming and finish the job in hand, so the grace period
+      # is what bounds that wait. Well above the default 30s: a large file mid-encode is worth
+      # letting finish rather than redoing after the lease lapses.
+      terminationGracePeriodSeconds: 180
+      imagePullSecrets:
+        - name: ghcr-creds
+      containers:
+        - name: worker
+          # CI rewrites this tag on every push, to the same tag web.yaml and api.yaml get.
+          image: ghcr.io/monkecloud/monke-app/worker:31c31cd
+          # Postgres, exactly as api.yaml wires it: the credential is the owner's shared role,
+          # and what is this app's own is the database named by the ConfigMap. Keyed to a
+          # ConfigMap rather than patched per environment on purpose — an overlay patch keyed
+          # to a Deployment by name would never have reached this new one, and this pod would
+          # have written to the production database from dev in silence.
+          env:
+            - name: PGHOST
+              valueFrom:
+                secretKeyRef: { name: yarn-pg, key: host }
+            - name: PGPORT
+              valueFrom:
+                secretKeyRef: { name: yarn-pg, key: port }
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef: { name: yarn-pg, key: username }
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef: { name: yarn-pg, key: password }
+            - name: PGDATABASE
+              valueFrom:
+                configMapKeyRef: { name: monke-app-db, key: database }
+            # The same bucket-scoped Garage credentials the api uses: the worker reads each
+            # source object and writes the three derivatives beside it.
+            - name: S3_ENDPOINT
+              valueFrom:
+                secretKeyRef: { name: monke-app-garage, key: endpoint }
+            - name: S3_BUCKET
+              valueFrom:
+                secretKeyRef: { name: monke-app-garage, key: bucket }
+            - name: S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef: { name: monke-app-garage, key: access_key }
+            - name: S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef: { name: monke-app-garage, key: secret_key }
+            # Progress reporting only. Host and port are constants in the code, the same way
+            # S3_REGION is — this repo's own redis.yaml defines them, not the cluster admin.
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: monke-app-redis, key: password }
+          # No probes. There is no HTTP surface to probe and no meaningful liveness question
+          # beyond "is the process alive", which k8s already answers by restarting it.
+          resources:
+            # Sized against the namespace quota rather than against ffmpeg's appetite: four of
+            # these at 500m take the namespace's summed limits to 3250m of 4000m, which leaves
+            # room for a web or api rolling update's surge pod. AAC encoding at these bitrates
+            # runs many times faster than realtime even at half a core.
+            requests: { cpu: 200m, memory: 256Mi, ephemeral-storage: 1Gi }
+            limits: { cpu: 500m, memory: 512Mi, ephemeral-storage: 3Gi }

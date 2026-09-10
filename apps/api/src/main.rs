@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -7,20 +9,18 @@ use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use axum::extract::{FromRef, FromRequestParts, Path, Query, Request, State};
 use axum::http::request::Parts;
 use axum::http::{header, StatusCode};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::{routing::get, routing::post, Json, Router};
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
-use rusty_s3::actions::{DeleteObject, GetObject, PutObject, S3Action};
-use rusty_s3::{Bucket, Credentials as S3Credentials, UrlStyle};
+use futures::{Stream, StreamExt};
+use monke_common::targets::{progress_key, target_from_progress_key};
+use monke_common::{redis_client, S3Store, TARGETS};
 use serde::{Deserialize, Serialize};
-use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
+use sqlx::postgres::PgPool;
 use tokio::signal::unix::{signal, SignalKind};
 
 const SESSION_COOKIE: &str = "session";
-
-// Garage doesn't expose its region per bucket, so it isn't one of the env vars the admin
-// hands out — it just has to match the s3_region set once in the cluster's garage.toml.
-const S3_REGION: &str = "garage";
 
 // Matches the "max upload size of like a gig" call from the disk-sizing discussion.
 const MAX_UPLOAD_BYTES: u64 = 1024 * 1024 * 1024;
@@ -28,9 +28,10 @@ const MAX_UPLOAD_BYTES: u64 = 1024 * 1024 * 1024;
 #[derive(Clone)]
 struct AppState {
     pool: PgPool,
-    s3_bucket: Bucket,
-    s3_credentials: S3Credentials,
-    http: reqwest::Client,
+    s3: S3Store,
+    // Transcode progress only, and nothing here ever fails a request over it — see
+    // read_progress. The cache is one pod on one node and is explicitly disposable.
+    redis: redis::Client,
 }
 
 impl FromRef<AppState> for PgPool {
@@ -318,46 +319,85 @@ async fn upload_audio(
         AudioError::Internal
     })?;
 
-    // Signed for the api to use immediately itself, not handed to the client, so a short
-    // expiry is fine — it only needs to outlive this one request.
-    let action = PutObject::new(&app.s3_bucket, Some(&app.s3_credentials), &key);
-    let signed_url = action.sign(Duration::from_secs(60));
-
     let body = reqwest::Body::wrap_stream(request.into_body().into_data_stream());
     let put_result = app
-        .http
-        .put(signed_url)
-        .header(header::CONTENT_LENGTH, content_length)
-        .header(header::CONTENT_TYPE, content_type)
-        .body(body)
-        .send()
-        .await
-        .and_then(reqwest::Response::error_for_status);
+        .s3
+        .put(&key, content_length, &content_type, body)
+        .await;
 
     if let Err(e) = put_result {
         eprintln!("s3 put failed: {e}");
-        // The object never landed, so the row shouldn't outlive it either — nothing else
-        // will ever move a permanently-'uploading' row forward.
-        if let Err(e) = sqlx::query("DELETE FROM audio_files WHERE id = $1")
-            .bind(file_id)
-            .execute(&app.pool)
-            .await
+
+        // Best-effort delete at the same key before giving up on the row. A failed PUT does
+        // not prove nothing landed — a lost response looks identical from here — and S3
+        // DELETE is idempotent, so this is the same reasoning delete_audio already relies
+        // on. Doing it now closes the window where the object outlives any record of it.
+        if let Err(e) = app.s3.delete(&key).await {
+            eprintln!("s3 delete after failed put failed: {e}");
+        }
+
+        // Not a row-delete: dropping the row would throw away the s3_key, which is the only
+        // handle on an object that may in fact be there. 'delete_pending' keeps it, guarded
+        // on 'uploading' so a delete that landed meanwhile isn't overwritten. Finalizing
+        // these rows is the reaper's job, which is deliberately not part of this change.
+        if let Err(e) = sqlx::query(
+            "UPDATE audio_files SET status = 'delete_pending'
+             WHERE id = $1 AND status = 'uploading'",
+        )
+        .bind(file_id)
+        .execute(&app.pool)
+        .await
         {
             eprintln!("query failed: {e}");
         }
         return Err(AudioError::UploadFailed);
     }
 
+    // The flip to 'uploaded' and the three queue rows go in together: a committed 'uploaded'
+    // with no jobs is a file that silently never gets transcoded, and jobs against a row
+    // that never became 'uploaded' are three guaranteed failures.
+    let mut tx = app.pool.begin().await.map_err(|e| {
+        eprintln!("begin failed: {e}");
+        AudioError::Internal
+    })?;
+
     // Guarded on the row still being 'uploading' so a delete that lands while this upload
     // was in flight isn't clobbered back to 'uploaded' by this update arriving after it.
-    sqlx::query(
+    let flipped = sqlx::query(
         "UPDATE audio_files SET status = 'uploaded' WHERE id = $1 AND status = 'uploading'",
     )
     .bind(file_id)
-    .execute(&app.pool)
+    .execute(&mut *tx)
     .await
     .map_err(|e| {
         eprintln!("query failed: {e}");
+        AudioError::Internal
+    })?;
+
+    // Zero means exactly that lost race: the row is already 'deleted' (or 'delete_pending')
+    // and queueing work against it would only produce three jobs with nothing to read.
+    if flipped.rows_affected() == 1 {
+        let targets: Vec<String> = TARGETS.iter().map(|t| t.to_string()).collect();
+        // ON CONFLICT DO NOTHING against the UNIQUE (audio_file_id, target): harmless
+        // belt-and-braces, since the only way rows could already exist is a retried upload
+        // against a row that had somehow gone back to 'uploading'.
+        sqlx::query(
+            "INSERT INTO transcode_jobs (audio_file_id, target)
+             SELECT $1, target FROM unnest($2::text[]) AS target
+             ON CONFLICT (audio_file_id, target) DO NOTHING",
+        )
+        .bind(file_id)
+        .bind(&targets)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            eprintln!("query failed: {e}");
+            AudioError::Internal
+        })?;
+    }
+
+    tx.commit().await.map_err(|e| {
+        eprintln!("commit failed: {e}");
         AudioError::Internal
     })?;
 
@@ -370,19 +410,140 @@ struct AudioFile {
     filename: String,
     status: String,
     created_at: String,
+    // Always all three, in TARGETS order, so a client can render a fixed set of rows rather
+    // than discovering which tiers exist from the payload.
+    transcodes: Vec<TranscodeState>,
+}
+
+// The SELECT behind list_audio. `flatten` is what lets the transcode half be the same type
+// the SSE snapshot selects on its own.
+#[derive(sqlx::FromRow)]
+struct AudioFileRow {
+    id: i64,
+    filename: String,
+    status: String,
+    created_at: String,
+    #[sqlx(flatten)]
+    transcodes: TranscodeRow,
+}
+
+#[derive(Serialize)]
+struct TranscodeState {
+    target: &'static str,
+    // The has_aac_* column: the derivative is in the bucket and can be served.
+    ready: bool,
+    // 0–100 while a worker is actually running this tier, null otherwise — including a
+    // 'pending' job nobody has picked up yet, and a tier whose worker has not ticked since
+    // the progress key's TTL lapsed.
+    progress: Option<u8>,
+}
+
+// The flags-and-in-flight-targets shape that both list_audio and the SSE snapshot need,
+// selected by TRANSCODE_COLUMNS. Kept in one place so the two cannot disagree about what
+// "ready" means.
+#[derive(sqlx::FromRow)]
+struct TranscodeRow {
+    has_aac_64: bool,
+    has_aac_128: bool,
+    has_aac_224: bool,
+    in_progress: Vec<String>,
+}
+
+impl TranscodeRow {
+    // Matched by name rather than indexed by position, so nothing here depends on TARGETS
+    // happening to be in the same order as the columns.
+    fn ready(&self, target: &str) -> bool {
+        match target {
+            "aac_64" => self.has_aac_64,
+            "aac_128" => self.has_aac_128,
+            "aac_224" => self.has_aac_224,
+            _ => false,
+        }
+    }
+
+    // Keys for exactly the tiers worth asking Redis about. A tier that is already ready, or
+    // has no running job, has nothing to report.
+    fn progress_keys(&self, audio_file_id: i64) -> Vec<String> {
+        self.in_progress
+            .iter()
+            .map(|target| progress_key(audio_file_id, target))
+            .collect()
+    }
+
+    fn states(&self, audio_file_id: i64, progress: &HashMap<String, u8>) -> Vec<TranscodeState> {
+        TARGETS
+            .iter()
+            .map(|&target| TranscodeState {
+                target,
+                ready: self.ready(target),
+                progress: self
+                    .in_progress
+                    .iter()
+                    .any(|t| t == target)
+                    .then(|| progress.get(&progress_key(audio_file_id, target)).copied())
+                    .flatten(),
+            })
+            .collect()
+    }
+}
+
+// `status = 'in_progress'` without a lease check on purpose: a lapsed lease still means the
+// tier is queued rather than finished, and the absent progress key is what makes it read as
+// "no percentage yet" instead of a stale one.
+const TRANSCODE_COLUMNS: &str = r#"has_aac_64, has_aac_128, has_aac_224,
+    ARRAY(SELECT j.target FROM transcode_jobs j
+          WHERE j.audio_file_id = audio_files.id AND j.status = 'in_progress') AS in_progress"#;
+
+// Progress is cosmetic, and k8s/redis.yaml is one pod on one node that is gone for good if
+// that node is lost. So a Redis failure degrades to "no percentage reported" rather than
+// failing a request that is otherwise answerable entirely from Postgres.
+async fn read_progress(client: &redis::Client, keys: &[String]) -> HashMap<String, u8> {
+    if keys.is_empty() {
+        return HashMap::new();
+    }
+
+    // One MGET for every in-flight tier across every file, rather than a round trip each.
+    let values: Result<Vec<Option<String>>, redis::RedisError> = async {
+        let mut conn = client.get_multiplexed_async_connection().await?;
+        redis::AsyncCommands::mget(&mut conn, keys).await
+    }
+    .await;
+
+    match values {
+        Ok(values) => keys
+            .iter()
+            .zip(values)
+            .filter_map(|(key, value)| {
+                // A worker writes a plain 0–100 integer; anything else is not ours to show.
+                let percent = value?.parse::<u8>().ok()?;
+                (percent <= 100).then(|| (key.clone(), percent))
+            })
+            .collect(),
+        Err(e) => {
+            eprintln!("redis mget failed: {e}");
+            HashMap::new()
+        }
+    }
 }
 
 async fn list_audio(
     State(app): State<AppState>,
     user: AuthUser,
 ) -> Result<Json<Vec<AudioFile>>, AudioError> {
-    let rows: Vec<(i64, String, String, String)> = sqlx::query_as(
+    // 'delete_pending' is excluded alongside 'deleted': it is the failed-upload state, which
+    // used to be a row-delete and so has never been something a client sees.
+    let rows: Vec<AudioFileRow> = sqlx::query_as(&format!(
         r#"SELECT id, filename, status,
                   to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+                      AS created_at,
+                  {TRANSCODE_COLUMNS}
            FROM audio_files
-           WHERE user_id = $1 AND status != 'deleted'
-           ORDER BY created_at DESC"#,
-    )
+           WHERE user_id = $1 AND status NOT IN ('deleted', 'delete_pending')
+           -- Qualified, not bare: the to_char column above is aliased `created_at`, and an
+           -- unqualified ORDER BY resolves to that output alias — which would sort the
+           -- second-precision *text* and tie two uploads in the same second.
+           ORDER BY audio_files.created_at DESC"#
+    ))
     .bind(user.id)
     .fetch_all(&app.pool)
     .await
@@ -391,13 +552,21 @@ async fn list_audio(
         AudioError::Internal
     })?;
 
+    // One MGET for every in-flight tier of every file, rather than one per file.
+    let keys: Vec<String> = rows
+        .iter()
+        .flat_map(|row| row.transcodes.progress_keys(row.id))
+        .collect();
+    let progress = read_progress(&app.redis, &keys).await;
+
     Ok(Json(
         rows.into_iter()
-            .map(|(id, filename, status, created_at)| AudioFile {
-                id,
-                filename,
-                status,
-                created_at,
+            .map(|row| AudioFile {
+                transcodes: row.transcodes.states(row.id, &progress),
+                id: row.id,
+                filename: row.filename,
+                status: row.status,
+                created_at: row.created_at,
             })
             .collect(),
     ))
@@ -421,10 +590,18 @@ fn sanitize_filename_header(name: &str) -> String {
 // Proxies the download for the same reason uploads are proxied: Garage has no public
 // Ingress, so a presigned URL handed to the browser would point somewhere it can't reach.
 // Streams the S3 response straight into the api's own response body rather than buffering.
+//
+// Forwards a client Range header straight through to Garage and mirrors back whatever
+// Garage answers (206 + Content-Range, or a plain 200) rather than parsing ranges itself —
+// that's what the audio player's seek bar relies on to fetch just the bytes it needs instead
+// of the whole file. Content-Disposition: attachment is harmless here even for the player:
+// browsers only act on it for a navigation/explicit download, not for a <audio>/<video> src
+// fetch, which is the only other consumer of this route.
 async fn download_audio(
     State(app): State<AppState>,
     user: AuthUser,
     Path(id): Path<i64>,
+    headers: axum::http::HeaderMap,
 ) -> Result<Response, AudioError> {
     let row: Option<(String, String)> = sqlx::query_as(
         "SELECT s3_key, filename FROM audio_files WHERE id = $1 AND user_id = $2 AND status = 'uploaded'",
@@ -440,44 +617,50 @@ async fn download_audio(
 
     let (key, filename) = row.ok_or(AudioError::NotFound)?;
 
-    let action = GetObject::new(&app.s3_bucket, Some(&app.s3_credentials), &key);
-    let signed_url = action.sign(Duration::from_secs(60));
+    // A Range that isn't valid UTF-8 is not a range Garage would honour either, so dropping
+    // it here just means the client gets the whole object back, as it would have anyway.
+    let range = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
 
-    let s3_response = app
-        .http
-        .get(signed_url)
-        .send()
-        .await
-        .and_then(reqwest::Response::error_for_status)
-        .map_err(|e| {
-            eprintln!("s3 get failed: {e}");
-            AudioError::DownloadFailed
-        })?;
+    let s3_response = app.s3.get(&key, range).await.map_err(|e| {
+        eprintln!("s3 get failed: {e}");
+        AudioError::DownloadFailed
+    })?;
+
+    let status = s3_response.status();
 
     // Whatever content-type the upload stored (or defaulted to) is what Garage hands back.
     let content_type = s3_response
         .headers()
         .get(header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("application/octet-stream")
-        .to_owned();
+        .cloned()
+        .unwrap_or_else(|| axum::http::HeaderValue::from_static("application/octet-stream"));
+    let content_length = s3_response.headers().get(header::CONTENT_LENGTH).cloned();
+    let content_range = s3_response.headers().get(header::CONTENT_RANGE).cloned();
 
     let body = axum::body::Body::from_stream(s3_response.bytes_stream());
 
-    Response::builder()
+    let mut builder = Response::builder()
+        .status(status)
         .header(header::CONTENT_TYPE, content_type)
+        .header(header::ACCEPT_RANGES, "bytes")
         .header(
             header::CONTENT_DISPOSITION,
             format!(
                 "attachment; filename=\"{}\"",
                 sanitize_filename_header(&filename)
             ),
-        )
-        .body(body)
-        .map_err(|e| {
-            eprintln!("response build failed: {e}");
-            AudioError::Internal
-        })
+        );
+    if let Some(len) = content_length {
+        builder = builder.header(header::CONTENT_LENGTH, len);
+    }
+    if let Some(range) = content_range {
+        builder = builder.header(header::CONTENT_RANGE, range);
+    }
+
+    builder.body(body).map_err(|e| {
+        eprintln!("response build failed: {e}");
+        AudioError::Internal
+    })
 }
 
 // Soft-delete: the S3 object is actually removed, but the row stays around at status
@@ -503,15 +686,7 @@ async fn delete_audio(
 
     // S3 DELETE is idempotent, so this is fine even for a row that's still 'uploading' and
     // never actually got an object written.
-    let action = DeleteObject::new(&app.s3_bucket, Some(&app.s3_credentials), &key);
-    let signed_url = action.sign(Duration::from_secs(60));
-    if let Err(e) = app
-        .http
-        .delete(signed_url)
-        .send()
-        .await
-        .and_then(reqwest::Response::error_for_status)
-    {
+    if let Err(e) = app.s3.delete(&key).await {
         eprintln!("s3 delete failed: {e}");
         return Err(AudioError::UploadFailed);
     }
@@ -528,6 +703,98 @@ async fn delete_audio(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// Streams one file's transcode progress as it happens, so a client watching an upload does
+// not have to poll list_audio for three tiers.
+//
+// Ownership is checked exactly the way download_audio checks it, and the same way: 404 for a
+// row that isn't the caller's, so the endpoint never confirms that someone else's id exists.
+async fn audio_progress(
+    State(app): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<i64>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, AudioError> {
+    let row: Option<TranscodeRow> = sqlx::query_as(&format!(
+        "SELECT {TRANSCODE_COLUMNS} FROM audio_files
+         WHERE id = $1 AND user_id = $2 AND status = 'uploaded'"
+    ))
+    .bind(id)
+    .bind(user.id)
+    .fetch_optional(&app.pool)
+    .await
+    .map_err(|e| {
+        eprintln!("query failed: {e}");
+        AudioError::Internal
+    })?;
+
+    let transcodes = row.ok_or(AudioError::NotFound)?;
+
+    // Subscribe before reading the snapshot would be tidier in theory, but the snapshot is
+    // the whole state rather than a delta — a tick that lands between the two is a
+    // percentage the next tick supersedes anyway.
+    let progress = read_progress(&app.redis, &transcodes.progress_keys(id)).await;
+    let snapshot = Event::default()
+        .event("snapshot")
+        .json_data(transcodes.states(id, &progress))
+        .map_err(|e| {
+            eprintln!("sse snapshot serialize failed: {e}");
+            AudioError::Internal
+        })?;
+
+    // One PSUBSCRIBE rather than three SUBSCRIBEs: the pattern covers every tier of this
+    // file, including the ones whose job has not been claimed yet.
+    let messages = match subscribe_progress(&app.redis, &progress_key(id, "*")).await {
+        Ok(stream) => stream.boxed(),
+        // Snapshot-only rather than an error. The client still gets the current state, and
+        // an EventSource reconnects on its own — which while the cache is down amounts to
+        // polling, instead of a dead endpoint.
+        Err(e) => {
+            eprintln!("redis psubscribe failed: {e}");
+            futures::stream::empty().boxed()
+        }
+    };
+
+    // The snapshot goes out immediately so a client that connects mid-transcode renders the
+    // real state instead of sitting blank until some worker happens to tick.
+    let stream = futures::stream::once(async move { Ok(snapshot) }).chain(messages);
+
+    // Traefik and the browser will both drop a connection that goes quiet, and a transcode
+    // can legitimately be silent for a while — a periodic comment keeps it open.
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+// Split out so the handler above can fall back to snapshot-only on any Redis failure: both
+// the connect and the PSUBSCRIBE can fail, and neither is worth a 5xx.
+async fn subscribe_progress(
+    client: &redis::Client,
+    pattern: &str,
+) -> Result<impl Stream<Item = Result<Event, Infallible>>, redis::RedisError> {
+    let mut pubsub = client.get_async_pubsub().await?;
+    pubsub.psubscribe(pattern).await?;
+
+    Ok(pubsub.into_on_message().filter_map(|msg| async move {
+        // Anything that doesn't parse is silently dropped rather than breaking the stream:
+        // the pattern could match a key written by something other than a worker.
+        let target = target_from_progress_key(msg.get_channel_name())?;
+        let percent = msg.get_payload::<String>().ok()?.parse::<u8>().ok()?;
+        if percent > 100 {
+            return None;
+        }
+
+        Event::default()
+            .event("progress")
+            .json_data(TranscodeState {
+                target,
+                // A tier being transcoded right now is by definition not yet servable; the
+                // flip to ready is a Postgres write, which the next snapshot reports.
+                ready: false,
+                progress: Some(percent),
+            })
+            .inspect_err(|e| eprintln!("sse progress serialize failed: {e}"))
+            .ok()
+            .map(Ok)
+    }))
+}
+
 // Deliberately does not touch Postgres. A probe that queries the database turns one blip
 // into every replica failing readiness at once, which is an outage the blip did not cause.
 async fn healthz() -> &'static str {
@@ -536,28 +803,7 @@ async fn healthz() -> &'static str {
 
 #[tokio::main]
 async fn main() {
-    // Two ways in. Locally, one DATABASE_URL as .env.example shows. In the cluster, the
-    // libpq variables: host/port/username/password come from the owner's Postgres Secret
-    // unchanged, and PGDATABASE names this app's own database, which is the only part that
-    // differs between environments. Keeping them separate means no password is ever
-    // substituted into a URL, so a character like @ or / in it cannot corrupt the string.
-    let options = if let Ok(url) = std::env::var("DATABASE_URL") {
-        url.parse::<PgConnectOptions>()
-            .expect("DATABASE_URL is not a valid Postgres connection string")
-    } else if std::env::var_os("PGDATABASE").is_some() {
-        PgConnectOptions::new()
-    } else {
-        // Not defaulted: PgConnectOptions would otherwise fall back to a database named
-        // after the connecting user, which is the shared one this app just moved off.
-        panic!("set DATABASE_URL, or the PG* variables including PGDATABASE");
-    };
-
-    // Lazy: the pod comes up and answers probes even if Postgres is briefly unreachable,
-    // instead of crashlooping on a transient failure. Connections are opened on first use.
-    let pool = PgPoolOptions::new()
-        .max_connections(5)
-        .acquire_timeout(Duration::from_secs(5))
-        .connect_lazy_with(options);
+    let pool = monke_common::pg_pool(5);
 
     // Migrations take a Postgres advisory lock, so both replicas starting together is safe:
     // one applies, the other waits and finds nothing to do. Retried because a pod can start
@@ -577,25 +823,12 @@ async fn main() {
         }
     }
 
-    let s3_endpoint = std::env::var("S3_ENDPOINT")
-        .expect("set S3_ENDPOINT")
-        .parse::<url::Url>()
-        .expect("S3_ENDPOINT is not a valid URL");
-    let s3_bucket_name = std::env::var("S3_BUCKET").expect("set S3_BUCKET");
-    let s3_access_key = std::env::var("S3_ACCESS_KEY").expect("set S3_ACCESS_KEY");
-    let s3_secret_key = std::env::var("S3_SECRET_KEY").expect("set S3_SECRET_KEY");
-
-    // Path style, not virtual-host: Garage is reached by IP/NodePort here, not a hostname
-    // that a bucket subdomain could be carved out of.
-    let s3_bucket = Bucket::new(s3_endpoint, UrlStyle::Path, s3_bucket_name, S3_REGION)
-        .expect("S3_ENDPOINT/S3_BUCKET did not form a valid bucket url");
-    let s3_credentials = S3Credentials::new(s3_access_key, s3_secret_key);
-
+    // Both panic on a missing variable, at startup rather than on the first request that
+    // needs one. redis_client() does not connect here — it is opened per use.
     let app_state = AppState {
         pool,
-        s3_bucket,
-        s3_credentials,
-        http: reqwest::Client::new(),
+        s3: S3Store::from_env(),
+        redis: redis_client(),
     };
 
     let app = Router::new()
@@ -606,6 +839,7 @@ async fn main() {
         .route("/api/auth/me", get(me))
         .route("/api/audio", post(upload_audio).get(list_audio))
         .route("/api/audio/{id}", get(download_audio).delete(delete_audio))
+        .route("/api/audio/{id}/progress", get(audio_progress))
         .with_state(app_state);
 
     let port: u16 = std::env::var("PORT")

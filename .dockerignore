@@ -1,0 +1,14 @@
+# The build context for both Rust images is the repo root, because a workspace member outside
+# the context is invisible to the build and `api` and `worker` share apps/common. That means
+# everything large in the tree would otherwise be uploaded to the daemon on every build.
+#
+# apps/web still builds from apps/web with its own .dockerignore, so nothing here affects it.
+.git
+.github
+k8s
+target
+apps/*/target
+node_modules
+apps/*/node_modules
+apps/web/dist
+.env
