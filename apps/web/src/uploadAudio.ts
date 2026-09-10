@@ -1,8 +1,17 @@
-import type { useToasts } from './Toasts'
+// A file being uploaded right now. Deliberately not an AudioFile: it has no server id yet, and
+// it is tracked separately from the fetched list so that refreshing that list — which happens
+// every time any upload settles — cannot wipe the rows of the uploads still in flight.
+export type PendingUpload = { key: string; filename: string; percent: number }
 
 // 'duplicate' is not a failure: the api refused the upload because this user already has a
 // file with the same name and the same bytes, which means what they wanted is already there.
 export type UploadOutcome = 'uploaded' | 'duplicate' | 'failed'
+
+export type UploadCallbacks = {
+  onQueued: (uploads: PendingUpload[]) => void
+  onProgress: (key: string, percent: number) => void
+  onSettled: (key: string, filename: string, outcome: UploadOutcome) => void
+}
 
 // XMLHttpRequest, not fetch: only XHR exposes upload progress events across browsers, and
 // the api proxies the bytes straight through to S3 rather than presigning a direct upload,
@@ -10,50 +19,26 @@ export type UploadOutcome = 'uploaded' | 'duplicate' | 'failed'
 //
 // Resolves rather than rejects on failure, because the caller uploads a whole selection and
 // one bad file must not abandon the rest of the queue.
-export function uploadAudio(
-  file: File,
-  toasts: ReturnType<typeof useToasts>,
-  onSettled?: () => void,
-): Promise<UploadOutcome> {
+function uploadOne(file: File, onProgress: (percent: number) => void): Promise<UploadOutcome> {
   return new Promise<UploadOutcome>((resolve) => {
-    const id = crypto.randomUUID()
-    const label = (suffix: string) => `${file.name} ${suffix}`
-
-    toasts.upsert({ id, kind: 'progress', label: label('uploading…'), percent: 0 })
-
     const xhr = new XMLHttpRequest()
     xhr.open('POST', `/api/audio?filename=${encodeURIComponent(file.name)}`)
 
     xhr.upload.onprogress = (e) => {
       if (!e.lengthComputable) return
-      const percent = Math.round((e.loaded / e.total) * 100)
-      toasts.upsert({ id, kind: 'progress', label: label('uploading…'), percent })
+      onProgress(Math.round((e.loaded / e.total) * 100))
     }
 
     // Fires only once the api has responded, which it only does after the object landed in
     // S3 and the row was flipped to 'uploaded' — not merely once the browser finished sending.
     xhr.onload = () => {
-      let outcome: UploadOutcome = 'failed'
-      if (xhr.status >= 200 && xhr.status < 300) {
-        outcome = 'uploaded'
-        toasts.upsert({ id, kind: 'success', label: label('uploaded') }, 4000)
-      } else if (xhr.status === 409) {
-        // The duplicate is only detectable once the whole body has been hashed, so the bytes
-        // were sent regardless — there is nothing to retry and nothing was stored twice.
-        outcome = 'duplicate'
-        toasts.upsert({ id, kind: 'success', label: label('already uploaded — skipped') }, 5000)
-      } else {
-        toasts.upsert({ id, kind: 'error', label: label('failed to upload') }, 6000)
-      }
-      onSettled?.()
-      resolve(outcome)
+      if (xhr.status >= 200 && xhr.status < 300) resolve('uploaded')
+      // The duplicate is only detectable once the whole body has been hashed, so the bytes
+      // were sent regardless — there is nothing to retry and nothing was stored twice.
+      else if (xhr.status === 409) resolve('duplicate')
+      else resolve('failed')
     }
-
-    xhr.onerror = () => {
-      toasts.upsert({ id, kind: 'error', label: label('failed to upload') }, 6000)
-      onSettled?.()
-      resolve('failed')
-    }
+    xhr.onerror = () => resolve('failed')
 
     xhr.send(file)
   })
@@ -67,20 +52,25 @@ const MAX_CONCURRENT_UPLOADS = 3
 
 // Drains a whole selection through that limit. Each worker takes the next file off the shared
 // queue as it frees up, so one slow large file doesn't hold back the others.
-export async function uploadAll(
-  files: File[],
-  toasts: ReturnType<typeof useToasts>,
-  onEachSettled?: () => void,
-): Promise<UploadOutcome[]> {
-  const queue = [...files]
-  const outcomes: UploadOutcome[] = []
+//
+// Keys are minted here rather than by the caller so there is one owner of the identity that
+// ties a file to its row and its progress.
+export async function uploadAll(files: File[], cb: UploadCallbacks): Promise<void> {
+  const queued = files.map((file) => ({
+    key: crypto.randomUUID(),
+    filename: file.name,
+    percent: 0,
+    file,
+  }))
+  cb.onQueued(queued.map(({ key, filename, percent }) => ({ key, filename, percent })))
 
-  const workers = Array.from({ length: Math.min(MAX_CONCURRENT_UPLOADS, queue.length) }, async () => {
-    for (let next = queue.shift(); next; next = queue.shift()) {
-      outcomes.push(await uploadAudio(next, toasts, onEachSettled))
+  const pool = [...queued]
+  const workers = Array.from({ length: Math.min(MAX_CONCURRENT_UPLOADS, pool.length) }, async () => {
+    for (let next = pool.shift(); next; next = pool.shift()) {
+      const outcome = await uploadOne(next.file, (percent) => cb.onProgress(next!.key, percent))
+      cb.onSettled(next.key, next.filename, outcome)
     }
   })
 
   await Promise.all(workers)
-  return outcomes
 }

@@ -130,8 +130,15 @@ input {
   background: #2563eb;
 }
 
-.status-uploaded {
-  background: #15803d;
+/* No .status-uploaded rule any more: a fully transcoded file shows no badge at all, because
+   its Play and Download links already say so. These two cover the states that are still
+   genuinely in question once the bytes have landed. */
+.status-transcoding {
+  background: #db2777;
+}
+
+.status-transcode-failed {
+  background: #b91c1c;
 }
 
 .toast-stack {
@@ -149,10 +156,6 @@ input {
   border-radius: 8px;
   color: #fff;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-}
-
-.toast-progress {
-  background: #2563eb;
 }
 
 .toast-success {
@@ -178,20 +181,6 @@ input {
   cursor: pointer;
   font-size: 1rem;
   line-height: 1;
-}
-
-.toast-progress-track {
-  margin-top: 0.4rem;
-  height: 4px;
-  border-radius: 2px;
-  background: rgba(255, 255, 255, 0.35);
-  overflow: hidden;
-}
-
-.toast-progress-fill {
-  height: 100%;
-  background: #fff;
-  transition: width 0.15s ease-out;
 }
 
 .player-bar {

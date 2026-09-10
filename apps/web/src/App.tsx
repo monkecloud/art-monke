@@ -4,7 +4,7 @@ import { FileList } from './FileList'
 import { LoginPage } from './LoginPage'
 import { Player } from './Player'
 import { ToastStack, useToasts } from './Toasts'
-import { uploadAll } from './uploadAudio'
+import { type PendingUpload, uploadAll } from './uploadAudio'
 
 type Session =
   | { kind: 'loading' }
@@ -16,6 +16,7 @@ export default function App() {
   const [session, setSession] = useState<Session>({ kind: 'loading' })
   const [files, setFiles] = useState<AudioFile[]>([])
   const [nowPlaying, setNowPlaying] = useState<AudioFile | null>(null)
+  const [uploads, setUploads] = useState<PendingUpload[]>([])
   const toasts = useToasts()
 
   const refreshFiles = useCallback(() => {
@@ -108,29 +109,38 @@ export default function App() {
             e.target.value = ''
             if (chosen.length === 0) return
 
-            // Stand in for the real rows until refreshFiles() replaces them: the server
-            // already has an 'uploading' row for each at this point, but the client has no
-            // way to know the ids until each request settles. Negative ids so they cannot
-            // collide with a real one, and distinct so React keys stay unique across a batch.
-            setFiles((fs) => [
-              ...chosen.map((file, i) => ({
-                id: -Date.now() - i,
-                filename: file.name,
-                status: 'uploading',
-                created_at: '',
-                transcodes: [],
-              })),
-              ...fs,
-            ])
-            // Refreshes as each file settles rather than only at the end, so finished uploads
-            // appear — and start showing transcode progress — while the rest are still going.
-            void uploadAll(chosen, toasts, refreshFiles)
+            void uploadAll(chosen, {
+              onQueued: (queued) => setUploads((u) => [...queued, ...u]),
+              onProgress: (key, percent) =>
+                setUploads((u) => u.map((x) => (x.key === key ? { ...x, percent } : x))),
+              onSettled: (key, filename, outcome) => {
+                setUploads((u) => u.filter((x) => x.key !== key))
+                // A toast only for the two outcomes that leave no row behind to speak for
+                // them. A successful upload needs none: its row is about to appear, already
+                // showing what happens next.
+                if (outcome === 'duplicate') {
+                  toasts.upsert(
+                    { id: key, kind: 'success', label: `${filename} — already uploaded` },
+                    5000,
+                  )
+                } else if (outcome === 'failed') {
+                  toasts.upsert(
+                    { id: key, kind: 'error', label: `${filename} — failed to upload` },
+                    6000,
+                  )
+                }
+                // Per file rather than once at the end, so finished uploads appear — and
+                // start showing transcode progress — while the rest are still going.
+                refreshFiles()
+              },
+            })
           }}
         />
       </label>
 
       <FileList
         files={files}
+        uploads={uploads}
         onPlay={setNowPlaying}
         onDelete={(id) => {
           deleteAudioFile(id)

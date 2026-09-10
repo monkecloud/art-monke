@@ -6,19 +6,21 @@ function tierLabel(target: string): string {
   return `${target.replace(/^aac_/, '')}k`
 }
 
-// A tier is still moving if it is queued or running. Once every tier is ready or failed there
-// is nothing further to hear about, which is what lets the stream below be closed.
+// Nothing further will happen to a tier that is ready or has given up.
 function isSettled(states: TranscodeState[]): boolean {
   return states.every((s) => s.state === 'ready' || s.state === 'failed')
 }
 
-// Live per-tier transcode status for one file.
+// Live per-tier transcode state for one file.
 //
-// The list payload is the baseline and the SSE stream is an overlay on top of it, rather than
-// the stream's events being copied into a state array seeded from props. That ordering matters:
-// props get a fresh identity on every refetch, so seeding from them would clobber live progress
-// with whatever the last list fetch happened to say. An overlay only ever moves a tier forward.
-export function TranscodeBars({ file }: { file: AudioFile }) {
+// A hook rather than state inside the bars, because the row's badge is derived from exactly the
+// same thing: whether a file is still transcoding is not knowable from the list payload alone
+// once a stream is running, and two copies of this would disagree.
+//
+// The list payload is the baseline and the stream is an overlay on top of it, rather than state
+// seeded from props. That ordering matters: props get a fresh identity on every refetch, so
+// seeding from them would clobber live progress with whatever the last fetch happened to say.
+export function useTranscodeStates(file: AudioFile): TranscodeState[] {
   const [live, setLive] = useState<Record<string, TranscodeState>>({})
 
   const states = file.transcodes.map((t) => live[t.target] ?? t)
@@ -46,8 +48,12 @@ export function TranscodeBars({ file }: { file: AudioFile }) {
     return () => source.close()
   }, [file.id, file.status, file.transcodes.length, settled])
 
-  if (file.transcodes.length === 0) return null
+  return states
+}
 
+// Purely presentational: the caller owns the state and decides whether these are worth showing
+// at all, since a fully transcoded file shows no bars.
+export function TranscodeBars({ states }: { states: TranscodeState[] }) {
   return (
     <div className="transcodes">
       {states.map((tier) => (

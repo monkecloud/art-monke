@@ -1,7 +1,9 @@
 import { useCallback, useRef, useState } from 'react'
 
+// No 'progress' kind any more: upload progress lives in the file row itself, next to the
+// transcode bars it turns into. What is left is the two outcomes that have no row to speak
+// for them — a refused duplicate and a failed upload both leave nothing behind.
 type Toast =
-  | { id: string; kind: 'progress'; label: string; percent: number }
   | { id: string; kind: 'success'; label: string }
   | { id: string; kind: 'error'; label: string }
 
@@ -15,8 +17,8 @@ export function useToasts() {
     setToasts((ts) => ts.filter((t) => t.id !== id))
   }, [])
 
-  // Upserts by id so a progress toast can be updated in place and then flipped to
-  // success/error without ever becoming a second toast.
+  // Upserts by id so re-reporting the same thing updates in place rather than stacking up a
+  // second toast for it.
   const upsert = useCallback(
     (toast: Toast, autoDismissMs?: number) => {
       setToasts((ts) => [...ts.filter((t) => t.id !== toast.id), toast])
@@ -58,11 +60,6 @@ export function ToastStack({
               ×
             </button>
           </div>
-          {toast.kind === 'progress' && (
-            <div className="toast-progress-track">
-              <div className="toast-progress-fill" style={{ width: `${toast.percent}%` }} />
-            </div>
-          )}
         </div>
       ))}
     </div>
