@@ -1,8 +1,15 @@
-# monke-app
+# art-monke
 
 This app runs on the Tamarin k3s cluster. It has a namespace of its own per environment
 (`yarn-monke-app-prod`, `yarn-monke-app-dev`) and reaches the cluster's shared
 Postgres and S3. Everything it runs is described by `k8s/` in this repo.
+
+The repo and its GHCR images are `art-monke`; everything **inside** the cluster is still
+named `monke-app` — the namespaces, the Deployments, the Services, the Ingress, the
+`monke-app-redis` and `monke-app-db` objects. That split is deliberate and should stay.
+Those names are the infra repo's, and the dev overlay patches this repo by resource name:
+a patch whose target no longer matches is not an error, it simply does nothing, so
+renaming the Ingress would drop the dev hostname without failing anything.
 
 ## Deploying is pushing
 
@@ -12,7 +19,7 @@ reaches into the cluster from outside.
 - push to **`master`** → prod namespace
 - push to **`dev`** → dev namespace
 
-CI builds the image, pushes it to `ghcr.io/monkecloud/monke-app`, and commits the new tag
+CI builds the image, pushes it to `ghcr.io/monkecloud/art-monke`, and commits the new tag
 into `k8s/`. That commit is what Flux picks up. A rollback is `git revert` plus a push —
 never an out-of-band change, or the repo stops describing what is running.
 
@@ -82,10 +89,10 @@ The `redis://:<password>@...` form sends an empty username and the server answer
 One directory per service under `apps/`, each with its own Dockerfile and its own GHCR
 image, and each with a Deployment in `k8s/`:
 
-- `apps/web` — TypeScript + Vite + React, built and served by nginx. `ghcr.io/monkecloud/monke-app`.
-- `apps/api` — Rust + tokio + axum. `ghcr.io/monkecloud/monke-app/api`.
+- `apps/web` — TypeScript + Vite + React, built and served by nginx. `ghcr.io/monkecloud/art-monke`.
+- `apps/api` — Rust + tokio + axum. `ghcr.io/monkecloud/art-monke/api`.
 - `apps/worker` — Rust. Transcodes uploads into AAC tiers by consuming the `transcode_jobs`
-  queue in Postgres. `ghcr.io/monkecloud/monke-app/worker`. No Service and no Ingress path:
+  queue in Postgres. `ghcr.io/monkecloud/art-monke/worker`. No Service and no Ingress path:
   it is not web-facing, so it needs neither.
 
 The two Rust services are one **Cargo workspace** rooted at the repo root, sharing
