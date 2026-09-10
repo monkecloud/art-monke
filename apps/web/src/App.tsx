@@ -14,29 +14,6 @@ type Session =
 
 export default function App() {
   const [session, setSession] = useState<Session>({ kind: 'loading' })
-  const [files, setFiles] = useState<AudioFile[]>([])
-  // The tiers are captured at the moment Play is clicked, which is live state from the row's
-  // own stream rather than whatever the last list fetch happened to say.
-  const [nowPlaying, setNowPlaying] = useState<{ file: AudioFile; ready: string[] } | null>(null)
-  const [uploads, setUploads] = useState<PendingUpload[]>([])
-  const toasts = useToasts()
-
-  const refreshFiles = useCallback(() => {
-    fetchAudioFiles()
-      .then(setFiles)
-      .catch(() => {})
-  }, [])
-
-  useEffect(() => {
-    if (session.kind !== 'authed') return
-    const ac = new AbortController()
-    fetchAudioFiles(ac.signal)
-      .then(setFiles)
-      .catch((err: unknown) => {
-        if (err instanceof DOMException && err.name === 'AbortError') return
-      })
-    return () => ac.abort()
-  }, [session.kind])
 
   useEffect(() => {
     const ac = new AbortController()
@@ -80,16 +57,50 @@ export default function App() {
   }
 
   return (
+    <SignedInApp username={session.username} onSignedOut={() => setSession({ kind: 'anon' })} />
+  )
+}
+
+// Everything here belongs to one signed-in account, so it lives below the session rather than
+// beside it: logging out unmounts this component and React throws the lot away — the file
+// list, the uploads, the toasts, and the playing track. Held in App instead, it would survive
+// the logout, and the next sign-in would remount the Player on the previous account's track
+// and start it playing again.
+function SignedInApp({ username, onSignedOut }: { username: string; onSignedOut: () => void }) {
+  const [files, setFiles] = useState<AudioFile[]>([])
+  // The tiers are captured at the moment Play is clicked, which is live state from the row's
+  // own stream rather than whatever the last list fetch happened to say.
+  const [nowPlaying, setNowPlaying] = useState<{ file: AudioFile; ready: string[] } | null>(null)
+  const [uploads, setUploads] = useState<PendingUpload[]>([])
+  const toasts = useToasts()
+
+  const refreshFiles = useCallback(() => {
+    fetchAudioFiles()
+      .then(setFiles)
+      .catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    const ac = new AbortController()
+    fetchAudioFiles(ac.signal)
+      .then(setFiles)
+      .catch((err: unknown) => {
+        if (err instanceof DOMException && err.name === 'AbortError') return
+      })
+    return () => ac.abort()
+  }, [])
+
+  return (
     <main>
       <header className="topbar">
-        <span className="muted">Signed in as {session.username}</span>
+        <span className="muted">Signed in as {username}</span>
         <button
           onClick={() => {
             // Fire-and-forget: the cookie is cleared client-side regardless of whether the
             // request lands, so a flaky connection can't strand the user in a signed-in UI
             // that no longer has a working session.
             fetch('/api/auth/logout', { method: 'POST' }).catch(() => {})
-            setSession({ kind: 'anon' })
+            onSignedOut()
           }}
         >
           Log out
