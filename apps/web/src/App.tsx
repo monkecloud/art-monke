@@ -1,40 +1,28 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { type AudioFile, deleteAudioFile, fetchAudioFiles } from './audioFiles'
+import { type AudioFile, deleteAudioFile, fetchAudioFiles, ownStreamBase } from './audioFiles'
 import { FileList } from './FileList'
 import { LoginPage } from './LoginPage'
 import { Player } from './Player'
+import { sharedPath, sharedUsername } from './routes'
+import { useSession } from './session'
+import { SharedLibrary } from './SharedLibrary'
 import { ToastStack, useToasts } from './Toasts'
 import { type PendingUpload, uploadAll } from './uploadAudio'
 
-type Session =
-  | { kind: 'loading' }
-  | { kind: 'anon' }
-  | { kind: 'authed'; username: string }
-  | { kind: 'error'; message: string }
-
 export default function App() {
-  const [session, setSession] = useState<Session>({ kind: 'loading' })
+  const [session, setSession] = useSession()
 
-  useEffect(() => {
-    const ac = new AbortController()
+  // Read during render rather than held in state: it only changes on a navigation, and every
+  // navigation here is a real one that reloads the page.
+  const shared = sharedUsername(window.location.pathname)
 
-    fetch('/api/auth/me', { signal: ac.signal })
-      .then(async (res) => {
-        if (res.status === 401) {
-          setSession({ kind: 'anon' })
-          return
-        }
-        if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
-        const { username } = (await res.json()) as { username: string }
-        setSession({ kind: 'authed', username })
-      })
-      .catch((err: unknown) => {
-        if (err instanceof DOMException && err.name === 'AbortError') return
-        setSession({ kind: 'error', message: err instanceof Error ? err.message : String(err) })
-      })
-
-    return () => ac.abort()
-  }, [])
+  // Checked ahead of every session branch below. A public library is readable without an
+  // account, so neither the login page nor the "could not reach the api" screen has any
+  // business standing in front of one — the session is still resolved, but only to decide
+  // what the corner of the page offers.
+  if (shared !== null) {
+    return <SharedLibrary username={shared} session={session} />
+  }
 
   if (session.kind === 'loading') {
     return (
@@ -97,17 +85,26 @@ function SignedInApp({ username, onSignedOut }: { username: string; onSignedOut:
     <main>
       <header className="topbar">
         <span className="muted">Signed in as {username}</span>
-        <button
-          onClick={() => {
-            // Fire-and-forget: the cookie is cleared client-side regardless of whether the
-            // request lands, so a flaky connection can't strand the user in a signed-in UI
-            // that no longer has a working session.
-            fetch('/api/auth/logout', { method: 'POST' }).catch(() => {})
-            onSignedOut()
-          }}
-        >
-          Log out
-        </button>
+        <div className="topbar-actions">
+          {/* A link to your own public page rather than a copy-to-clipboard button: following
+              it shows you exactly what a visitor sees, which is worth more than the URL on its
+              own when what you are about to hand out is a public link. The address bar is then
+              the thing to copy. */}
+          <a className="link" href={sharedPath(username)}>
+            Share
+          </a>
+          <button
+            onClick={() => {
+              // Fire-and-forget: the cookie is cleared client-side regardless of whether
+              // the request lands, so a flaky connection can't strand the user in a signed-in
+              // UI that no longer has a working session.
+              fetch('/api/auth/logout', { method: 'POST' }).catch(() => {})
+              onSignedOut()
+            }}
+          >
+            Log out
+          </button>
+        </div>
       </header>
 
       <label className="upload-button">
@@ -156,6 +153,8 @@ function SignedInApp({ username, onSignedOut }: { username: string; onSignedOut:
         files={files}
         uploads={uploads}
         playingId={nowPlaying?.file.id ?? null}
+        live
+        emptyMessage="No files uploaded yet."
         onPlay={(file, ready) => {
           // A second click on the track already loaded is a pause, not a restart — the same
           // thing the bar's own button and the spacebar do.
@@ -189,6 +188,7 @@ function SignedInApp({ username, onSignedOut }: { username: string; onSignedOut:
           key={nowPlaying.file.id}
           file={nowPlaying.file}
           uploader={username}
+          streamBase={ownStreamBase(nowPlaying.file.id)}
           readyTargets={nowPlaying.ready}
           audioRef={audioRef}
         />

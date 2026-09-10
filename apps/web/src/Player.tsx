@@ -74,13 +74,19 @@ const MEDIA_ARTWORK = [
 export function Player({
   file,
   uploader,
+  streamBase,
   readyTargets,
   audioRef,
 }: {
   file: AudioFile
-  // Who uploaded it, which the api guarantees is whoever is signed in: the list is scoped
-  // to `user_id`, so a file you can see is a file you put there.
+  // Who uploaded it: the signed-in account on your own files, and the account the library
+  // belongs to on a public one. Either way it is the owner of the list the track came out of,
+  // never the person listening — every list the api serves is scoped to a single `user_id`.
   uploader: string
+  // The route this track streams from, minus the `?tier=`. Passed in rather than derived from
+  // the id, because a public library is served by different routes from your own and the
+  // player cannot tell from a file which list it came out of.
+  streamBase: string
   readyTargets: string[]
   // Handed up to the caller so the file list can toggle the track it already started
   // without this component having to expose a whole control surface. A ref rather than
@@ -265,7 +271,7 @@ export function Player({
       <audio
         ref={attachAudio}
         // Always a tier, never the source.
-        src={`/api/audio/${file.id}?tier=${tier}`}
+        src={`${streamBase}?tier=${tier}`}
         autoPlay
         onPlay={() => setIsPlaying(true)}
         onPause={() => setIsPlaying(false)}
