@@ -13,6 +13,10 @@ on:
     paths-ignore:
       - 'k8s/**'
       - '**.md'
+  # A build on demand. The ignores above mean a commit that only rewrites image names or
+  # documentation cannot build itself — which is exactly the commit that most needs a build,
+  # since Flux will apply the new manifests either way.
+  workflow_dispatch:
 
 permissions:
   contents: write   # to commit the tag bump
@@ -37,9 +41,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # `suffix` is appended to the repo's own GHCR path. web keeps the bare name it
-          # has always had — renaming it would create a new, private package that the
-          # ghcr-creds pull secret has never been granted.
+          # `suffix` is appended to the repo's own GHCR path, so web is the bare repo name
+          # and the other two hang off it. That path follows the repo name, which is what
+          # makes renaming the repo a cluster change and not just a GitHub one: the images
+          # land in new packages, those arrive private and unlinked, and nothing pulls them
+          # until ghcr-creds has been granted read on each.
           #
           # `context` is per service because the two Rust images are one Cargo workspace:
           # they share apps/common, and a path dependency outside the build context does not

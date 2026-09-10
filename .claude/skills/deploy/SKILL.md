@@ -21,7 +21,7 @@ git add -A && git commit -m "..."
 git push
 ```
 
-CI then does the rest: it builds the image, pushes it to `ghcr.io/monkecloud/monke-app:<sha>`,
+CI then does the rest: it builds the image, pushes it to `ghcr.io/monkecloud/art-monke:<sha>`,
 and commits that exact tag into `k8s/`. Flux applies that second commit. **Never edit the
 image tag by hand and never use `:latest`** — the tag is how rollback works, and a moving
 tag means a restarted pod silently changes version.
