@@ -18,6 +18,14 @@ main {
   padding: 0 1rem 7rem;
 }
 
+/* The pages that are a file list. Wider than the reading measure the rest of the app is set
+   to, because a row is a filename on the left and its length and age on the right, and at
+   32rem those two ends are close enough to read as one crowded line. The login page and the
+   loading and error states keep the narrow default. */
+main.library {
+  max-width: 52rem;
+}
+
 button {
   font: inherit;
   padding: 0.4rem 0.9rem;
@@ -121,8 +129,12 @@ input {
 
 .file-row {
   display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
+  /* One line per file on a wide screen — the name and its controls at the left edge, the
+     length and upload time at the right. The transcode bars are the only thing that wraps,
+     and they claim a full row of their own below (see .file-row > .transcodes). */
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.75rem;
   /* Side padding so the hover and playing tints below have something to fill, pulled back
      out by the negative margin so the text still lines up with the rest of the page. */
   padding: 0.5rem 0.75rem;
@@ -173,10 +185,19 @@ input {
   display: flex;
   align-items: center;
   gap: 0.75rem;
+  /* Takes the row's slack so the meta beside it is pushed to the right edge; min-width lets
+     it be squeezed past its content, which is what lets the name below ellipsise at all.
+     An `auto` basis rather than 0 so this stays inert once the phone rule below stands the
+     row back up and grow starts meaning height. */
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
+/* Sized to the filename rather than to the row, so the badge and Delete stay next to the
+   name on the left instead of being flung across a 52rem row to meet the meta. It still
+   gives way first when the row is too narrow for everything. */
 .file-name {
-  flex: 1;
+  flex: 0 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -190,7 +211,14 @@ input {
   align-items: center;
   gap: 0.5rem;
   font-size: 0.75rem;
-  color: #6b7280;
+  /* A step up from the #6b7280 the transcode bars use. The bars are scaffolding that goes
+     away once a file is ready; these two numbers are permanent, so they are lifted just
+     clear of that grey while staying quieter than the filename. */
+  color: #8a919f;
+  /* Never wraps or shrinks: it is short, and the row's right edge is a column of durations
+     and dates that only reads as one if every row ends the same way. */
+  flex: none;
+  white-space: nowrap;
 }
 
 /* A separator before every item but the first, so the line reads correctly whether or not
@@ -366,6 +394,12 @@ input {
 /* Transcode tiers: one row per tier, each a label, a bar and a state. Laid out on a grid so
    the bars line up with each other regardless of how wide the state text is -- which matters
    again the moment the ladder is more than one tier. */
+/* The one part of a row that wraps: a full-width line under the name and meta. A width
+   rather than a flex-basis, which would mean a height once the row stacks on a phone. */
+.file-row > .transcodes {
+  width: 100%;
+}
+
 .transcodes {
   display: grid;
   grid-template-columns: 2.5rem 1fr 3.5rem;
@@ -446,6 +480,13 @@ input {
        the bar's height depends on how its last row wraps, which depends on how many tiers
        are ready. */
     padding-bottom: 11rem;
+  }
+
+  /* No room for a name at one end and its meta at the other, so the row goes back to
+     stacking: name, then meta, then bars. */
+  .file-row {
+    flex-direction: column;
+    align-items: stretch;
   }
 
   /* Same treatment as the player bar below: the name gets a line to itself rather than

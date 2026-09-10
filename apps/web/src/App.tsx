@@ -82,7 +82,7 @@ function SignedInApp({ username, onSignedOut }: { username: string; onSignedOut:
   }, [])
 
   return (
-    <main>
+    <main className="library">
       <header className="topbar">
         <span className="muted">Signed in as {username}</span>
         <div className="topbar-actions">

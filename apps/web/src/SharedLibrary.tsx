@@ -82,7 +82,7 @@ export function SharedLibrary({ username, session }: { username: string; session
   const isOwner = session.kind === 'authed' && session.username === username
 
   return (
-    <main>
+    <main className="library">
       <header className="topbar">
         {/* Not "<name>'s files" when there is no such account: a heading that names a library
             over a body saying nobody owns one reads as a page that failed to load rather than
