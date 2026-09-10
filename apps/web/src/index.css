@@ -112,7 +112,7 @@ input {
    that are still uploading or transcoding get none of this and stay inert. */
 .file-row-playable {
   cursor: pointer;
-  transition: background-color 120ms ease;
+  transition: background-color 60ms ease;
 }
 
 /* A translucent grey rather than a flat colour: the page follows the system light/dark
@@ -123,13 +123,12 @@ input {
   background: rgba(107, 114, 128, 0.14);
 }
 
-/* The playing row. The tint is the accent used for links, at low enough alpha to sit under
-   text in either scheme, and the accent stripe is an inset shadow rather than a border so
-   the row does not shift sideways by 3px the moment it starts playing. */
-.file-row-playing,
-.file-row-playing.file-row-playable:hover {
-  background: rgba(37, 99, 235, 0.14);
-  box-shadow: inset 3px 0 0 #2563eb;
+/* The track loaded into the player, marked on the filename rather than on the row. Colour
+   rather than a background: the row's background already means "the pointer is here", and
+   two tints in the same place read as one confused state. The accent is the one links use. */
+.file-row-playing .file-name {
+  color: #2563eb;
+  font-weight: 500;
 }
 
 /* The file and its controls: what .file-row itself used to be, before the transcode tiers
