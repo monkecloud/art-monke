@@ -42,7 +42,7 @@ spec:
       containers:
         - name: worker
           # CI rewrites this tag on every push, to the same tag web.yaml and api.yaml get.
-          image: ghcr.io/monkecloud/monke-app/worker:94e1bfb
+          image: ghcr.io/monkecloud/monke-app/worker:8f27cd0
           # Postgres, exactly as api.yaml wires it: the credential is the owner's shared role,
           # and what is this app's own is the database named by the ConfigMap. Keyed to a
           # ConfigMap rather than patched per environment on purpose — an overlay patch keyed
