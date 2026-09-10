@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { AudioFile, TranscodeState } from './audioFiles'
 
-// `aac_128` -> `128k`, for a label narrow enough to sit in a row of three.
+// `aac_224` -> `224k`, for a label narrow enough to sit beside a bar.
 function tierLabel(target: string): string {
   return `${target.replace(/^aac_/, '')}k`
 }

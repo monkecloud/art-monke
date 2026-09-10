@@ -65,7 +65,7 @@ spec:
               valueFrom:
                 configMapKeyRef: { name: monke-app-db, key: database }
             # The same bucket-scoped Garage credentials the api uses: the worker reads each
-            # source object and writes the three derivatives beside it.
+            # source object and writes each derivative beside it.
             - name: S3_ENDPOINT
               valueFrom:
                 secretKeyRef: { name: monke-app-garage, key: endpoint }

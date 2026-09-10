@@ -62,7 +62,7 @@ function FileRow({
     ? transcodeBadge(inFlight, anyFailed)
     : { className: `status-${file.status}`, text: file.status }
 
-  // Bars disappear along with the badge. A row of three full green bars conveys nothing that
+  // Bars disappear along with the badge. A row of full green bars conveys nothing that
   // a playable row does not already.
   const showBars = uploaded && states.length > 0 && !allReady
 

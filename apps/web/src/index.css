@@ -344,8 +344,9 @@ input {
   color: #fff;
 }
 
-/* Transcode tiers: one row of three, each a label, a bar and a state. Laid out on a grid so
-   the three bars line up with each other regardless of how wide the state text is. */
+/* Transcode tiers: one row per tier, each a label, a bar and a state. Laid out on a grid so
+   the bars line up with each other regardless of how wide the state text is -- which matters
+   again the moment the ladder is more than one tier. */
 .transcodes {
   display: grid;
   grid-template-columns: 2.5rem 1fr 3.5rem;
@@ -416,7 +417,7 @@ input {
 }
 
 /* Phones. The player bar is the one piece of this UI that cannot survive being narrowed:
-   at 360px its nine controls leave the seek bar a few pixels wide. It wraps into three
+   at 360px its controls leave the seek bar a few pixels wide. It wraps into three
    rows instead — filename, scrubber, then the buttons. */
 @media (max-width: 40rem) {
   main {
@@ -441,7 +442,7 @@ input {
 
   .player-bar {
     flex-wrap: wrap;
-    /* The column gap is tight because the third row — two buttons plus three tier chips —
+    /* The column gap is tight because the third row — two buttons plus a tier chip each —
        has to fit within 320px, the narrowest phone worth supporting. */
     gap: 0.5rem;
     padding: 0.5rem 0.75rem;
@@ -486,10 +487,10 @@ input {
     order: 4;
   }
 
-  /* Vertical padding for the touch target, horizontal pared back to the minimum: the
-     three chips plus the two transport buttons are 8px over a 320px line otherwise, and
-     the chips are the secondary control of the two. The labels are a fixed set
-     (64k/128k/224k), so this budget does not move. */
+  /* Vertical padding for the touch target, horizontal pared back to the minimum. Sized when
+     the ladder was 64k/128k/224k, where those three chips plus the two transport buttons ran
+     8px over a 320px line; a single 224k chip clears that easily. Left as it is rather than
+     retuned, because it is what a re-added tier would need again. */
   .player-tier {
     padding: 0.4rem 0.35rem;
   }

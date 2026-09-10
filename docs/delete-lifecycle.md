@@ -14,31 +14,37 @@ already in flight.
 So delete does not prevent the write. It means **the delete is not finished until cleanup has
 confirmed the bucket is clean.** Everything below is downstream of that.
 
-## The four objects
+## The objects
 
-A file has at most four objects, and only one is recorded anywhere:
+A file's objects are all derived from one recorded key:
 
-- the source, at `audio_files.s3_key`
-- three derivatives, at `derivative_key(s3_key, target)` for each of `TARGETS`
+- the source, at `audio_files.s3_key` — the only one recorded anywhere
+- one derivative per name in `TARGETS`, at `derivative_key(s3_key, target)`
   (`apps/common/src/targets.rs`)
 
-Derivative keys are a **pure function** of `s3_key`; nothing stores them. So cleanup never has
-to know what a worker actually managed to write — it deletes all four unconditionally. That is
-what makes a worker dying at an arbitrary point safe, rather than needing a case per point.
+Deliberately not a fixed count: the ladder was 64/128/224 and is now 224 alone, so anything
+that hardcoded "four" would have quietly stopped covering what was left. It also means
+`TARGETS` is the *only* record of which keys exist — a tier removed from it is a key nothing
+will ever delete, which is why retiring the lower two meant deleting their objects by hand.
 
-It is also why the row outlives its objects: `s3_key` is the only handle on all four.
+Derivative keys are a **pure function** of `s3_key`; nothing stores them. So cleanup never has
+to know what a worker actually managed to write — it deletes every one of them
+unconditionally. That is what makes a worker dying at an arbitrary point safe, rather than
+needing a case per point.
+
+It is also why the row outlives its objects: `s3_key` is the only handle on any of them.
 
 **`s3_key` must stay unique per upload.** It is `{user_id}/{32 random bytes}`, so deleting a
 file and re-uploading the identical bytes produces an unrelated key and the sweep for the old
 row cannot reach the new file's objects. Making the key deterministic -- content-addressing it
-on `content_hash`, say -- would break that: the two rows would share all four keys, and
+on `content_hash`, say -- would break that: the two rows would share every key, and
 finalizing the deleted one would delete the live one's objects.
 
 ## Lifecycle
 
 ```
 click delete → audio_files.status = 'delete_pending'   (synchronous, in the API)
-sweep pass   → queue rows cleared, four objects deleted, status = 'deleted' + deleted_at
+sweep pass   → queue rows cleared, every object deleted, status = 'deleted' + deleted_at
              → row kept indefinitely
 ```
 
@@ -69,7 +75,7 @@ to a few seconds.
    `done`/`failed` are inert but keep the file off the barrier check.
 2. **`claim_free_files`** — select `delete_pending` rows with no queue rows left at all. After
    step 1 the only rows that can remain are `in_progress`, so this is the barrier.
-3. **`finalize`** — delete all four keys, then set `deleted` + `deleted_at`, guarded on
+3. **`finalize`** — delete every key, then set `deleted` + `deleted_at`, guarded on
    `delete_pending`. The status write happens **last, and only if every delete succeeded**;
    otherwise the row stays `delete_pending` and the next pass retries.
 
@@ -134,7 +140,7 @@ answer a 409 with the id of a file the user cannot see.
 | failure | what happens |
 |---|---|
 | worker dies mid-transcode, before the PUT | job stays `in_progress`; sweep skips the file; lease lapses, re-claim hits `delete_pending`, fails Terminal → `failed`; next pass clears it, queue empties, cleanup runs |
-| worker dies right after the PUT | same path — the sweep deletes all four keys regardless, so the orphan goes with them |
+| worker dies right after the PUT | same path — the sweep deletes every key regardless, so the orphan goes with them |
 | pod rolled out mid-job | SIGTERM handler finishes the job in hand; PUT lands, flag guard returns 0 rows, worker deletes its own object, job → `done`. If the 180s grace cuts it off, degenerates to one of the rows above |
 | sweep dies mid-sweep | next pass redoes it; every step is idempotent and the status write is last |
 | Garage down during a pass | deletes fail, row stays `delete_pending`, next pass retries |

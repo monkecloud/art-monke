@@ -474,14 +474,15 @@ async fn probe_duration(path: &Path) -> Result<Option<f64>, Failure> {
 
 /// Persists the probed duration onto the file row, so the list can show a track's length.
 ///
-/// All three of a file's tiers probe the same source, so this runs up to three times per
-/// file with the same answer; `IS NULL` makes the later ones no-ops rather than repeated
-/// writes. Not folded into the transaction that flags a finished tier, because the duration
-/// is a property of the *source* — it is known as soon as the first job probes, and stays
-/// true even if every transcode then fails.
+/// Every tier of a file probes the same source, so with more than one target this runs once
+/// per tier with the same answer; `IS NULL` makes the later ones no-ops rather than repeated
+/// writes. Kept now that the ladder is a single tier, because it is what makes re-adding one
+/// free. Not folded into the transaction that flags a finished tier, because the duration is
+/// a property of the *source* — it is known as soon as the first job probes, and stays true
+/// even if every transcode then fails.
 ///
 /// Failure is swallowed. This is metadata for a list view: losing it must not fail a job
-/// whose actual work — the derivative — is about to succeed. The next tier's probe retries
+/// whose actual work — the derivative — is about to succeed. A later attempt's probe retries
 /// it for free.
 async fn record_duration(pool: &PgPool, audio_file_id: i64, duration: Option<f64>) {
     let Some(seconds) = duration else { return };

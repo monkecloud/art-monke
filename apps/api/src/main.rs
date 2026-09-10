@@ -491,9 +491,9 @@ async fn upload_audio(
             .finalize(),
     );
 
-    // The flip to 'uploaded' and the three queue rows go in together: a committed 'uploaded'
-    // with no jobs is a file that silently never gets transcoded, and jobs against a row
-    // that never became 'uploaded' are three guaranteed failures.
+    // The flip to 'uploaded' and the queue rows go in together: a committed 'uploaded' with
+    // no jobs is a file that silently never gets transcoded, and jobs against a row that
+    // never became 'uploaded' are guaranteed failures.
     let mut tx = app.pool.begin().await.map_err(|e| {
         eprintln!("begin failed: {e}");
         AudioError::Internal
@@ -532,7 +532,7 @@ async fn upload_audio(
     };
 
     // Zero means exactly that lost race: the row is already 'deleted' (or 'delete_pending')
-    // and queueing work against it would only produce three jobs with nothing to read.
+    // and queueing work against it would only produce jobs with nothing to read.
     if flipped.rows_affected() == 1 {
         let targets: Vec<String> = TARGETS.iter().map(|t| t.to_string()).collect();
         // ON CONFLICT DO NOTHING against the UNIQUE (audio_file_id, target): harmless
@@ -570,8 +570,8 @@ struct AudioFile {
     // Absent until a worker has probed the source, and on files older than the column. The
     // client shows a length only when there is one.
     duration_seconds: Option<f64>,
-    // Always all three, in TARGETS order, so a client can render a fixed set of rows rather
-    // than discovering which tiers exist from the payload.
+    // Always every entry of TARGETS, in its order, so a client can render a fixed set of rows
+    // rather than discovering which tiers exist from the payload.
     transcodes: Vec<TranscodeState>,
 }
 
@@ -954,7 +954,7 @@ async fn delete_audio(
 }
 
 // Streams one file's transcode progress as it happens, so a client watching an upload does
-// not have to poll list_audio for three tiers.
+// not have to poll list_audio for it.
 //
 // Ownership is checked exactly the way download_audio checks it, and the same way: 404 for a
 // row that isn't the caller's, so the endpoint never confirms that someone else's id exists.
@@ -990,7 +990,7 @@ async fn audio_progress(
             AudioError::Internal
         })?;
 
-    // One PSUBSCRIBE rather than three SUBSCRIBEs: the pattern covers every tier of this
+    // One PSUBSCRIBE rather than a SUBSCRIBE per tier: the pattern covers every tier of this
     // file, including the ones whose job has not been claimed yet.
     let messages = match subscribe_progress(&app.redis, &progress_key(id, "*")).await {
         Ok(stream) => stream.boxed(),
