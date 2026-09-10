@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { type AudioFile, deleteAudioFile, fetchAudioFiles } from './audioFiles'
 import { FileList } from './FileList'
 import { LoginPage } from './LoginPage'
@@ -68,10 +68,13 @@ export default function App() {
 // and start it playing again.
 function SignedInApp({ username, onSignedOut }: { username: string; onSignedOut: () => void }) {
   const [files, setFiles] = useState<AudioFile[]>([])
-  // The tiers are captured at the moment Play is clicked, which is live state from the row's
-  // own stream rather than whatever the last list fetch happened to say.
+  // The tiers are captured at the moment a row is clicked, which is live state from that
+  // row's own stream rather than whatever the last list fetch happened to say.
   const [nowPlaying, setNowPlaying] = useState<{ file: AudioFile; ready: string[] } | null>(null)
   const [uploads, setUploads] = useState<PendingUpload[]>([])
+  // The Player's <audio>, handed back up so a click on the row that is already playing can
+  // toggle it. Held here rather than in the Player because the file list is what needs it.
+  const audioRef = useRef<HTMLAudioElement | null>(null)
   const toasts = useToasts()
 
   const refreshFiles = useCallback(() => {
@@ -152,7 +155,19 @@ function SignedInApp({ username, onSignedOut }: { username: string; onSignedOut:
       <FileList
         files={files}
         uploads={uploads}
-        onPlay={(file, ready) => setNowPlaying({ file, ready })}
+        playingId={nowPlaying?.file.id ?? null}
+        onPlay={(file, ready) => {
+          // A second click on the track already loaded is a pause, not a restart — the same
+          // thing the bar's own button and the spacebar do.
+          if (nowPlaying?.file.id === file.id) {
+            const el = audioRef.current
+            if (!el) return
+            if (el.paused) void el.play()
+            else el.pause()
+            return
+          }
+          setNowPlaying({ file, ready })
+        }}
         onDelete={(id) => {
           deleteAudioFile(id)
             .then(() => {
@@ -175,6 +190,7 @@ function SignedInApp({ username, onSignedOut }: { username: string; onSignedOut:
           file={nowPlaying.file}
           uploader={username}
           readyTargets={nowPlaying.ready}
+          audioRef={audioRef}
         />
       )}
     </main>

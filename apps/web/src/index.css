@@ -100,8 +100,36 @@ input {
   display: flex;
   flex-direction: column;
   gap: 0.4rem;
-  padding: 0.5rem 0;
+  /* Side padding so the hover and playing tints below have something to fill, pulled back
+     out by the negative margin so the text still lines up with the rest of the page. */
+  padding: 0.5rem 0.75rem;
+  margin: 0 -0.75rem;
+  border-radius: 6px;
   border-bottom: 1px solid rgba(107, 114, 128, 0.3);
+}
+
+/* The whole row is the play control once a tier exists, so it has to look like one. Rows
+   that are still uploading or transcoding get none of this and stay inert. */
+.file-row-playable {
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+/* A translucent grey rather than a flat colour: the page follows the system light/dark
+   scheme, and this reads as a soft lift against either ground. :focus-visible matches it so
+   the keyboard path shows the same row highlight the mouse does, on top of the focus ring. */
+.file-row-playable:hover,
+.file-row-playable:focus-visible {
+  background: rgba(107, 114, 128, 0.14);
+}
+
+/* The playing row. The tint is the accent used for links, at low enough alpha to sit under
+   text in either scheme, and the accent stripe is an inset shadow rather than a border so
+   the row does not shift sideways by 3px the moment it starts playing. */
+.file-row-playing,
+.file-row-playing.file-row-playable:hover {
+  background: rgba(37, 99, 235, 0.14);
+  box-shadow: inset 3px 0 0 #2563eb;
 }
 
 /* The file and its controls: what .file-row itself used to be, before the transcode tiers
@@ -155,7 +183,7 @@ input {
 }
 
 /* No .status-uploaded rule any more: a fully transcoded file shows no badge at all, because
-   its Play and Download links already say so. These two cover the states that are still
+   a row that plays when clicked already says so. These two cover the states that are still
    genuinely in question once the bytes have landed. */
 .status-transcoding {
   background: #db2777;
@@ -286,13 +314,6 @@ input {
   border-color: #fff;
   background: rgba(255, 255, 255, 0.15);
   color: #fff;
-}
-
-/* Play is unavailable until a tier exists, since the source is never played. */
-.link:disabled {
-  color: #6b7280;
-  text-decoration: none;
-  cursor: default;
 }
 
 /* Transcode tiers: one row of three, each a label, a bar and a state. Laid out on a grid so
