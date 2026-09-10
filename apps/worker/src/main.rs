@@ -22,6 +22,8 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::signal::unix::{signal, SignalKind};
 
+mod sweep;
+
 /// Two fixed paths under the pod's own writable /tmp — no PVC, nothing shared between
 /// replicas. k8s/worker.yaml sizes its ephemeral-storage request around one source file here.
 const SCRATCH_DIR: &str = "/tmp/scratch";
@@ -50,6 +52,11 @@ const PROGRESS_TTL_SECS: u64 = 120;
 /// `last_error` is for a human reading the queue; ffmpeg can be chatty and the whole of it is
 /// not worth storing per row.
 const MAX_ERROR_CHARS: usize = 500;
+
+/// How often each replica runs the deletion sweep. Deleting is not something anyone waits on,
+/// and the sweep shares this loop with transcoding, so this is a background cadence rather
+/// than a latency target.
+const SWEEP_EVERY: Duration = Duration::from_secs(60);
 
 #[derive(sqlx::FromRow)]
 struct Job {
@@ -110,7 +117,19 @@ async fn main() {
 
     eprintln!("monke-worker {worker_id} started");
 
+    // In this loop rather than a task of its own, so it needs no third pool connection and no
+    // change to k8s/worker.yaml. The cost is that a replica part-way through a long transcode
+    // does not sweep until it finishes; with four replicas that is not worth a second
+    // connection held open on a shared server. Every replica sweeps -- see the module docs on
+    // why that is safe.
+    let mut last_sweep: Option<Instant> = None;
+
     while !draining.load(Ordering::Relaxed) {
+        if last_sweep.is_none_or(|at| at.elapsed() >= SWEEP_EVERY) {
+            sweep::sweep_once(&pool, &s3).await;
+            last_sweep = Some(Instant::now());
+        }
+
         match claim_job(&pool, &worker_id).await {
             Ok(Some(job)) => {
                 eprintln!(
@@ -244,10 +263,10 @@ async fn run_job(
     .await
     .map_err(|e| Failure::Retryable(format!("flag update failed: {e}")))?;
 
-    if flagged.rows_affected() == 0 {
-        // The object is in the bucket with nothing pointing at it. Left for the deferred
-        // deletion-cleanup sweep rather than deleted here: it is the same orphan that a
-        // delete racing any in-flight job produces, and one sweep should own all of them.
+    // The object is in the bucket with nothing pointing at it, because a delete landed while
+    // this job ran. Cleaned up below, after the commit.
+    let orphaned = flagged.rows_affected() == 0;
+    if orphaned {
         eprintln!(
             "job {}: file {} is no longer 'uploaded'; marking done without setting {column}",
             job.id, job.audio_file_id
@@ -267,6 +286,19 @@ async fn run_job(
     tx.commit()
         .await
         .map_err(|e| Failure::Retryable(format!("commit failed: {e}")))?;
+
+    // After the commit rather than inside the transaction: this is a network call to Garage,
+    // and holding a Postgres connection open across it buys nothing. Best-effort, because the
+    // sweep deletes this exact key anyway -- it is derived from the source's own s3_key, so
+    // the sweep does not need to know the object was ever written. Doing it here just means
+    // the common case of a delete racing a transcode is cleaned up in seconds instead of
+    // waiting on a pass. See docs/delete-lifecycle.md.
+    if orphaned {
+        if let Err(e) = s3.delete(&key).await {
+            eprintln!("job {}: orphan cleanup of {} failed: {e}", job.id, key);
+        }
+        return Ok(());
+    }
 
     eprintln!("job {} done ({} bytes at {})", job.id, size, key);
 
@@ -456,7 +488,7 @@ async fn record_duration(pool: &PgPool, audio_file_id: i64, duration: Option<f64
 
     if let Err(e) = sqlx::query(
         "UPDATE audio_files SET duration_seconds = $1
-         WHERE id = $2 AND duration_seconds IS NULL",
+         WHERE id = $2 AND duration_seconds IS NULL AND status = 'uploaded'",
     )
     .bind(seconds)
     .bind(audio_file_id)

@@ -914,42 +914,41 @@ async fn download_audio(
     })
 }
 
-// Soft-delete: the S3 object is actually removed, but the row stays around at status
-// 'deleted' rather than being dropped, so history isn't lost.
+// Marks the file for deletion and returns. Nothing here touches S3: the objects, the queue
+// rows and eventually this row itself are cleaned up by the worker's sweep.
+//
+// Deliberately not an inline delete. A DELETE to Garage from here cannot be made atomic with
+// what a worker is doing, so it could never stop a transcode that is already running from
+// writing its derivative afterwards -- and it made the button fail outright whenever Garage
+// hiccuped, leaving the file visible to someone who had asked for it gone. Marking intent is
+// one Postgres write that cannot half-fail, and the sweep is what actually converges the
+// bucket. See docs/delete-lifecycle.md.
 async fn delete_audio(
     State(app): State<AppState>,
     user: AuthUser,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, AudioError> {
-    let key: Option<(String,)> = sqlx::query_as(
-        "SELECT s3_key FROM audio_files WHERE id = $1 AND user_id = $2 AND status != 'deleted'",
+    // Guarded on the two live statuses rather than `!= 'deleted'`, so a second click on a row
+    // that is already mid-sweep is a no-op rather than something that re-enters the pipeline
+    // or resets a deleted_at the retention pass is counting from.
+    let marked = sqlx::query(
+        "UPDATE audio_files SET status = 'delete_pending'
+         WHERE id = $1 AND user_id = $2 AND status IN ('uploading', 'uploaded')",
     )
     .bind(id)
     .bind(user.id)
-    .fetch_optional(&app.pool)
+    .execute(&app.pool)
     .await
     .map_err(|e| {
         eprintln!("query failed: {e}");
         AudioError::Internal
     })?;
 
-    let (key,) = key.ok_or(AudioError::NotFound)?;
-
-    // S3 DELETE is idempotent, so this is fine even for a row that's still 'uploading' and
-    // never actually got an object written.
-    if let Err(e) = app.s3.delete(&key).await {
-        eprintln!("s3 delete failed: {e}");
-        return Err(AudioError::UploadFailed);
+    // Same 404-for-someone-else's-id reasoning as download_audio: a row that is not the
+    // caller's and a row that is already going away are not distinguished here.
+    if marked.rows_affected() == 0 {
+        return Err(AudioError::NotFound);
     }
-
-    sqlx::query("UPDATE audio_files SET status = 'deleted' WHERE id = $1")
-        .bind(id)
-        .execute(&app.pool)
-        .await
-        .map_err(|e| {
-            eprintln!("query failed: {e}");
-            AudioError::Internal
-        })?;
 
     Ok(StatusCode::NO_CONTENT)
 }
