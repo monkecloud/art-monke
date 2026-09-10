@@ -48,6 +48,19 @@ function tierLabel(target: string): string {
   return `${target.replace(/^aac_/, '')}k`
 }
 
+// What Android puts on the lock screen and in the notification shade. Served from
+// `public/`, so these are plain paths in the built image rather than anything the api or
+// Garage has to hand out — the same "baked in, versioned with the code" deal as the rest of
+// the site's static content.
+//
+// Two sizes because Android picks the closest to whatever surface it is drawing: the shade
+// wants something small, the lock screen blows one up full-width. JPEG rather than PNG: it
+// is a photograph, and 512x512 of it as a PNG is roughly eight times the bytes.
+const MEDIA_ARTWORK = [
+  { src: '/media-art-192.jpg', sizes: '192x192', type: 'image/jpeg' },
+  { src: '/media-art-512.jpg', sizes: '512x512', type: 'image/jpeg' },
+]
+
 // Mounted once, keyed on file.id by the caller so switching tracks remounts it fresh
 // (new <audio> element, reset time/duration state) instead of trying to patch one up.
 //
@@ -78,6 +91,68 @@ export function Player({ file, readyTargets }: { file: AudioFile; readyTargets: 
   useEffect(() => {
     if (audioEl) audioEl.volume = volume
   }, [audioEl, volume])
+
+  // The OS-level media card: Chrome hands this to Android, which is what turns a locked
+  // phone or a minimised browser into something with a title, artwork and transport
+  // controls. Without it Android still shows a card — audio is playing, after all — but
+  // falls back to the page title and no art.
+  //
+  // Keyed on the filename rather than set once, so it follows a track change. The component
+  // remounts per track anyway (the caller keys it on file.id), but that is the caller's
+  // choice to make, not something this effect should quietly depend on.
+  useEffect(() => {
+    if (!('mediaSession' in navigator)) return
+
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: file.filename,
+      artist: 'monke',
+      artwork: MEDIA_ARTWORK,
+    })
+
+    // Otherwise the card outlives the player — closing the track, or logging out, would
+    // leave a stale notification pointing at audio that is no longer playing.
+    return () => {
+      navigator.mediaSession.metadata = null
+    }
+  }, [file.filename])
+
+  // Separate from the metadata above because it changes on a different beat: every
+  // play/pause toggles this, and rebuilding MediaMetadata each time would make Android
+  // re-fetch and re-decode the artwork on every tap.
+  useEffect(() => {
+    if (!('mediaSession' in navigator)) return
+    navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused'
+  }, [isPlaying])
+
+  // Chrome derives play/pause from the <audio> element on its own, but the rest of the
+  // buttons only appear if there is a handler behind them — and a scrubber on the lock
+  // screen needs `seekto` specifically.
+  useEffect(() => {
+    if (!('mediaSession' in navigator) || !audioEl) return
+
+    navigator.mediaSession.setActionHandler('play', () => void audioEl.play())
+    navigator.mediaSession.setActionHandler('pause', () => audioEl.pause())
+    navigator.mediaSession.setActionHandler('stop', () => {
+      audioEl.pause()
+      audioEl.currentTime = 0
+    })
+    navigator.mediaSession.setActionHandler('seekto', (details) => {
+      if (details.seekTime === undefined) return
+      // Honoured when Android is scrubbing continuously: it asks for the position without
+      // committing to it, so seeking the element outright would fight the user's finger.
+      if (details.fastSeek && 'fastSeek' in audioEl) {
+        audioEl.fastSeek(details.seekTime)
+        return
+      }
+      audioEl.currentTime = details.seekTime
+    })
+
+    return () => {
+      for (const action of ['play', 'pause', 'stop', 'seekto'] as const) {
+        navigator.mediaSession.setActionHandler(action, null)
+      }
+    }
+  }, [audioEl])
 
   function togglePlay() {
     if (!audioEl) return
