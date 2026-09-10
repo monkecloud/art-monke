@@ -173,6 +173,7 @@ function SignedInApp({ username, onSignedOut }: { username: string; onSignedOut:
         <Player
           key={nowPlaying.file.id}
           file={nowPlaying.file}
+          uploader={username}
           readyTargets={nowPlaying.ready}
         />
       )}

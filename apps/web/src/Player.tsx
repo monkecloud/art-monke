@@ -71,7 +71,17 @@ const MEDIA_ARTWORK = [
 // `readyTargets` is ascending, and never empty: the caller only offers Play once a tier
 // exists, because the source audio is never played. That is the whole point of transcoding —
 // the source can be a 1GB WAV, while every tier is a faststart MP4 that seeks properly.
-export function Player({ file, readyTargets }: { file: AudioFile; readyTargets: string[] }) {
+export function Player({
+  file,
+  uploader,
+  readyTargets,
+}: {
+  file: AudioFile
+  // Who uploaded it, which the api guarantees is whoever is signed in: the list is scoped
+  // to `user_id`, so a file you can see is a file you put there.
+  uploader: string
+  readyTargets: string[]
+}) {
   const [isPlaying, setIsPlaying] = useState(true)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
@@ -105,7 +115,15 @@ export function Player({ file, readyTargets }: { file: AudioFile; readyTargets: 
 
     navigator.mediaSession.metadata = new MediaMetadata({
       title: file.filename,
-      artist: 'monke',
+      // The uploader, for want of a real one: nothing extracts the artist tag out of the
+      // source file yet, and a name that came from the account at least describes the
+      // track rather than being decoration.
+      artist: uploader,
+      // Nothing here has an album either, and the field is just a string Android draws as a
+      // third line — so it carries the site's name rather than going empty. Deliberately not
+      // the hostname: the same bundle ships to both namespaces, and dev is served from a
+      // different one, so a hardcoded art.monke.ca would be a lie there.
+      album: 'art-monke',
       artwork: MEDIA_ARTWORK,
     })
 
@@ -114,7 +132,7 @@ export function Player({ file, readyTargets }: { file: AudioFile; readyTargets: 
     return () => {
       navigator.mediaSession.metadata = null
     }
-  }, [file.filename])
+  }, [file.filename, uploader])
 
   // Separate from the metadata above because it changes on a different beat: every
   // play/pause toggles this, and rebuilding MediaMetadata each time would make Android
