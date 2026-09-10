@@ -128,13 +128,18 @@ input {
 }
 
 .file-row {
-  display: flex;
-  /* One line per file on a wide screen — the name and its controls at the left edge, the
-     length and upload time at the right. The transcode bars are the only thing that wraps,
-     and they claim a full row of their own below (see .file-row > .transcodes). */
-  flex-wrap: wrap;
+  /* One line per file on a wide screen — the name and its controls in the first column, the
+     length and upload time in the second, and the transcode bars across both below. A grid
+     rather than a wrapping flex row: a long filename made that row wrap, dropping the meta
+     onto a line of its own, and `minmax(0, 1fr)` is what makes the name column give way and
+     ellipsise instead. */
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 0.4rem 0.75rem;
+  /* The list is itself a flex column, and without this a row is allowed to stretch to the
+     width of its own longest filename and take the whole page sideways with it. */
+  min-width: 0;
   /* Side padding so the hover and playing tints below have something to fill, pulled back
      out by the negative margin so the text still lines up with the rest of the page. */
   padding: 0.5rem 0.75rem;
@@ -185,11 +190,8 @@ input {
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  /* Takes the row's slack so the meta beside it is pushed to the right edge; min-width lets
-     it be squeezed past its content, which is what lets the name below ellipsise at all.
-     An `auto` basis rather than 0 so this stays inert once the phone rule below stands the
-     row back up and grow starts meaning height. */
-  flex: 1 1 auto;
+  /* Its grid track is already the one that absorbs the row's slack. This is what lets it be
+     squeezed past its own content, which is in turn what lets the name below ellipsise. */
   min-width: 0;
 }
 
@@ -198,6 +200,7 @@ input {
    gives way first when the row is too narrow for everything. */
 .file-name {
   flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -215,9 +218,9 @@ input {
      away once a file is ready; these two numbers are permanent, so they are lifted just
      clear of that grey while staying quieter than the filename. */
   color: #8a919f;
-  /* Never wraps or shrinks: it is short, and the row's right edge is a column of durations
-     and dates that only reads as one if every row ends the same way. */
-  flex: none;
+  /* Never wraps: it is short, and the row's right edge is a column of durations and dates
+     that only reads as one if every row ends the same way. */
+  justify-self: end;
   white-space: nowrap;
 }
 
@@ -232,6 +235,13 @@ input {
    keeps a column of durations aligned digit for digit. */
 .file-duration {
   font-variant-numeric: tabular-nums;
+}
+
+/* Whatever sits beside the name keeps its size; the name is what shortens. Both are already
+   as small as they read, and a badge squeezed out of its own pill says nothing. */
+.file-main > .status-badge,
+.file-main > .link {
+  flex: none;
 }
 
 .status-badge {
@@ -482,11 +492,14 @@ input {
     padding-bottom: 11rem;
   }
 
-  /* No room for a name at one end and its meta at the other, so the row goes back to
-     stacking: name, then meta, then bars. */
+  /* No room for a name at one end and its meta at the other, so the row drops to a single
+     column and its three parts stack: name, then meta, then bars. */
   .file-row {
-    flex-direction: column;
-    align-items: stretch;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .file-meta {
+    justify-self: start;
   }
 
   /* Same treatment as the player bar below: the name gets a line to itself rather than
@@ -496,8 +509,11 @@ input {
     gap: 0.5rem 0.75rem;
   }
 
+  /* A full line to itself rather than being ellipsised down to nothing beside the badge and
+     Delete — but allowed to shrink, so a long filename truncates instead of pushing the row
+     wider than the screen. */
   .file-name {
-    flex: 1 0 100%;
+    flex: 0 1 100%;
   }
 
   .player-bar {
