@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AudioFile } from './audioFiles'
 import { formatDuration } from './format'
 
@@ -75,12 +75,17 @@ export function Player({
   file,
   uploader,
   readyTargets,
+  audioRef,
 }: {
   file: AudioFile
   // Who uploaded it, which the api guarantees is whoever is signed in: the list is scoped
   // to `user_id`, so a file you can see is a file you put there.
   uploader: string
   readyTargets: string[]
+  // Handed up to the caller so the file list can toggle the track it already started
+  // without this component having to expose a whole control surface. A ref rather than
+  // state, because nothing above needs to re-render when the element arrives.
+  audioRef: React.RefObject<HTMLAudioElement | null>
 }) {
   const [isPlaying, setIsPlaying] = useState(true)
   const [currentTime, setCurrentTime] = useState(0)
@@ -94,6 +99,18 @@ export function Player({
   // under it. A ref, not state: it is consumed once, by an event handler, and re-rendering
   // on it would be pointless.
   const resumeRef = useRef<{ time: number; playing: boolean } | null>(null)
+
+  // One ref callback feeding both the local state and the caller's ref. Memoised because an
+  // inline arrow would be a new callback on every render, and React detaches and reattaches
+  // a ref whose identity changed — calling this with null and then the element again, which
+  // sets state, which renders, which makes another arrow.
+  const attachAudio = useCallback(
+    (el: HTMLAudioElement | null) => {
+      audioRef.current = el
+      setAudioEl(el)
+    },
+    [audioRef],
+  )
 
   // volume is not a prop on <audio>, so it has to be assigned to the element. Keyed on
   // audioEl as well as volume because the element arrives via ref *after* the first render:
@@ -178,6 +195,38 @@ export function Player({
     else audioEl.pause()
   }
 
+  // Space as the transport control, the way it works everywhere else audio plays. On window
+  // rather than on the bar, since the point is that it works without clicking the bar first —
+  // and here rather than in App because there is nothing to toggle until a track is loaded,
+  // and this component is mounted exactly when there is one.
+  useEffect(() => {
+    // Copied into a local, and the handler is a const arrow rather than a declaration, so
+    // that the null check above still holds inside it: a hoisted function could have been
+    // called before the check ran, and the narrowing does not reach into one.
+    const el = audioEl
+    if (!el) return
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== ' ' || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return
+      // Anything focused that answers Space itself keeps it: a button takes it as a click, a
+      // text field takes it as a space, and a focused file row takes it as "play this one".
+      const target = e.target
+      if (
+        target instanceof Element &&
+        target.closest('button, a, input, select, textarea, [role="button"], [contenteditable]')
+      ) {
+        return
+      }
+      // Space scrolls the page otherwise.
+      e.preventDefault()
+      if (el.paused) void el.play()
+      else el.pause()
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [audioEl])
+
   function stop() {
     if (!audioEl) return
     audioEl.pause()
@@ -214,7 +263,7 @@ export function Player({
           src; the download route already proxies it through to Garage and mirrors back
           whatever Garage answers. */}
       <audio
-        ref={setAudioEl}
+        ref={attachAudio}
         // Always a tier, never the source.
         src={`/api/audio/${file.id}?tier=${tier}`}
         autoPlay
