@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { AudioFile } from './audioFiles'
 
 function formatTime(seconds: number): string {
@@ -8,14 +8,61 @@ function formatTime(seconds: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`
 }
 
+// Volume is a per-browser preference, not per-track and not per-session, so it outlives both
+// this component and the page. localStorage rather than a cookie or the account: it never
+// needs to reach the server, and it should not follow the user onto a different machine.
+const VOLUME_KEY = 'monke-app:volume'
+
+// Every access is guarded. Reading or writing localStorage *throws* outright in a browser
+// configured to block site data, so an unguarded read here would take the whole player down
+// rather than just losing a preference.
+function readStoredVolume(): number {
+  try {
+    const raw = window.localStorage.getItem(VOLUME_KEY)
+    // Checked before coercing, and not folded into the range test below, because
+    // Number(null) is 0 rather than NaN — a missing key would otherwise read as a
+    // perfectly valid "silent" and every fresh browser would start muted. Number('')
+    // is 0 too, hence rejecting blanks rather than just null.
+    if (raw === null || raw.trim() === '') return 1
+
+    const stored = Number(raw)
+    // NaN (something else wrote junk under this key) and anything outside the range an
+    // <audio> element will accept.
+    if (!Number.isFinite(stored) || stored < 0 || stored > 1) return 1
+    return stored
+  } catch {
+    return 1
+  }
+}
+
+function storeVolume(volume: number) {
+  try {
+    window.localStorage.setItem(VOLUME_KEY, String(volume))
+  } catch {
+    // A preference that cannot be saved is not worth interrupting playback over.
+  }
+}
+
 // Mounted once, keyed on file.id by the caller so switching tracks remounts it fresh
 // (new <audio> element, reset time/duration state) instead of trying to patch one up.
+//
+// That remount is why volume is read from storage rather than just held in state: every
+// track change throws this component's state away, so a plain useState(1) would snap the
+// slider back to full on each new song as well as on each page load.
 export function Player({ file }: { file: AudioFile }) {
   const [isPlaying, setIsPlaying] = useState(true)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
-  const [volume, setVolume] = useState(1)
+  // Passed as a function so storage is read once on mount, not on every render.
+  const [volume, setVolume] = useState(readStoredVolume)
   const [audioEl, setAudioEl] = useState<HTMLAudioElement | null>(null)
+
+  // volume is not a prop on <audio>, so it has to be assigned to the element. Keyed on
+  // audioEl as well as volume because the element arrives via ref *after* the first render:
+  // without it a restored volume would show on the slider but play at full until touched.
+  useEffect(() => {
+    if (audioEl) audioEl.volume = volume
+  }, [audioEl, volume])
 
   function togglePlay() {
     if (!audioEl) return
@@ -37,7 +84,10 @@ export function Player({ file }: { file: AudioFile }) {
   function changeVolume(e: React.ChangeEvent<HTMLInputElement>) {
     const v = Number(e.target.value)
     setVolume(v)
-    if (audioEl) audioEl.volume = v
+    // Persisted on change rather than in the effect above, so what gets saved is always a
+    // deliberate choice and never a restored value being written straight back.
+    storeVolume(v)
+    // The effect above is what applies it to the element.
   }
 
   return (
