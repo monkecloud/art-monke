@@ -19,39 +19,45 @@ export function formatDuration(totalSeconds: number | null | undefined): string 
   return hours > 0 ? `${hours}:${mm}:${ss}` : `${mm}:${ss}`
 }
 
-const MINUTE = 60_000
-const HOUR = 60 * MINUTE
-const DAY = 24 * HOUR
+// One fixed layout rather than a locale's own: `2026-09-06 13:46 EST`. Big-endian and
+// 24-hour so a column of them sorts and scans by eye, which a locale-ordered date does not
+// — but the *value* is local, and the zone is named rather than assumed, because the row
+// is answering "when did I upload this" for whoever is reading it.
+//
+// en-CA is the vehicle for that layout, not a choice about the reader: it is the locale
+// whose numeric date is already ISO-ordered, and asking for the parts by name means the
+// output does not depend on how it chooses to punctuate them.
+const STAMP = new Intl.DateTimeFormat('en-CA', {
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  // h23 rather than hour12: false, which some engines render midnight as 24:00 under.
+  hourCycle: 'h23',
+  // The abbreviation where the zone has one (EST, EDT, JST) and a GMT offset where it does
+  // not. Deliberately not the offset alone: the abbreviation is what a person recognises,
+  // and it also distinguishes standard from daylight time on a stamp months old.
+  timeZoneName: 'short',
+})
 
-/// When a file was uploaded, as a short label plus the full local timestamp behind it.
+/// When a file was uploaded, as an absolute local timestamp.
 ///
-/// Relative while that is the more useful answer, absolute once "37d ago" stops being one.
-/// `exact` always carries the unabbreviated version for the row's tooltip, because the
-/// relative label is deliberately lossy and is not re-rendered on a timer.
-export function formatUploadedAt(iso: string): { label: string; exact: string } | null {
+/// `null` only for a timestamp that cannot be parsed at all, which the caller omits rather
+/// than rendering as a placeholder.
+export function formatUploadedAt(iso: string): string | null {
   const then = new Date(iso)
   if (Number.isNaN(then.getTime())) return null
 
-  const exact = then.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
-  const elapsed = Date.now() - then.getTime()
+  // By part rather than by formatting the whole thing, so the separators are ours: the
+  // formatter would otherwise put its own comma between the date and the time.
+  const parts: Partial<Record<Intl.DateTimeFormatPartTypes, string>> = {}
+  for (const part of STAMP.formatToParts(then)) parts[part.type] = part.value
 
-  // A row timestamped in the future — clock skew between this browser and the database —
-  // falls through to the absolute date rather than rendering a negative age.
-  if (elapsed < 0) return { label: exact, exact }
-  if (elapsed < MINUTE) return { label: 'just now', exact }
-  if (elapsed < HOUR) return { label: `${Math.floor(elapsed / MINUTE)}m ago`, exact }
-  if (elapsed < DAY) return { label: `${Math.floor(elapsed / HOUR)}h ago`, exact }
-  if (elapsed < 7 * DAY) return { label: `${Math.floor(elapsed / DAY)}d ago`, exact }
+  const { year, month, day, hour, minute, timeZoneName } = parts
+  // Every one of these is requested above, so a missing part means the runtime gave us
+  // something unexpected — better to show nothing than half a timestamp.
+  if (!year || !month || !day || !hour || !minute || !timeZoneName) return null
 
-  // The year is dropped for this year's uploads, which is most of them, and kept once it
-  // is genuinely load-bearing.
-  const sameYear = then.getFullYear() === new Date().getFullYear()
-  return {
-    label: then.toLocaleDateString(undefined, {
-      day: 'numeric',
-      month: 'short',
-      ...(sameYear ? {} : { year: 'numeric' }),
-    }),
-    exact,
-  }
+  return `${year}-${month}-${day} ${hour}:${minute} ${timeZoneName}`
 }
