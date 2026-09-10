@@ -720,12 +720,28 @@ async fn read_progress(client: &redis::Client, keys: &[String]) -> HashMap<Strin
     }
 }
 
-async fn list_audio(
-    State(app): State<AppState>,
-    user: AuthUser,
-) -> Result<Json<Vec<AudioFile>>, AudioError> {
-    // 'delete_pending' is excluded alongside 'deleted': it is the failed-upload state, which
-    // used to be a row-delete and so has never been something a client sees.
+// Which rows a list is allowed to show.
+//
+// The owner sees uploads still on their way in; 'delete_pending' is excluded alongside
+// 'deleted' because it is the failed-upload state, which used to be a row-delete and so has
+// never been something a client sees.
+//
+// A visitor to a public library sees only what has actually landed. A row mid-upload is the
+// owner's own business, and there is nothing on one a listener could play anyway.
+const OWNER_STATUSES: &str = "status NOT IN ('deleted', 'delete_pending')";
+const PUBLIC_STATUSES: &str = "status = 'uploaded'";
+
+// One account's files. Shared by the owner's list and the public one so that the two cannot
+// drift apart in what they report about a file — they differ only in which rows they may see,
+// which is what `statuses` selects.
+//
+// `statuses` is one of the two consts above and never anything a caller supplies, for the same
+// reason TRANSCODE_COLUMNS is interpolated rather than bound: a WHERE fragment is not a value.
+async fn list_audio_for(
+    app: &AppState,
+    user_id: i64,
+    statuses: &str,
+) -> Result<Vec<AudioFile>, AudioError> {
     let rows: Vec<AudioFileRow> = sqlx::query_as(&format!(
         r#"SELECT id, filename, status,
                   to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
@@ -733,13 +749,13 @@ async fn list_audio(
                   duration_seconds,
                   {TRANSCODE_COLUMNS}
            FROM audio_files
-           WHERE user_id = $1 AND status NOT IN ('deleted', 'delete_pending')
+           WHERE user_id = $1 AND {statuses}
            -- Qualified, not bare: the to_char column above is aliased `created_at`, and an
            -- unqualified ORDER BY resolves to that output alias — which would sort the
            -- second-precision *text* and tie two uploads in the same second.
            ORDER BY audio_files.created_at DESC"#
     ))
-    .bind(user.id)
+    .bind(user_id)
     .fetch_all(&app.pool)
     .await
     .map_err(|e| {
@@ -754,18 +770,58 @@ async fn list_audio(
         .collect();
     let progress = read_progress(&app.redis, &keys).await;
 
-    Ok(Json(
-        rows.into_iter()
-            .map(|row| AudioFile {
-                transcodes: row.transcodes.states(row.id, &progress),
-                id: row.id,
-                filename: row.filename,
-                status: row.status,
-                created_at: row.created_at,
-                duration_seconds: row.duration_seconds,
-            })
-            .collect(),
-    ))
+    Ok(rows
+        .into_iter()
+        .map(|row| AudioFile {
+            transcodes: row.transcodes.states(row.id, &progress),
+            id: row.id,
+            filename: row.filename,
+            status: row.status,
+            created_at: row.created_at,
+            duration_seconds: row.duration_seconds,
+        })
+        .collect())
+}
+
+async fn list_audio(
+    State(app): State<AppState>,
+    user: AuthUser,
+) -> Result<Json<Vec<AudioFile>>, AudioError> {
+    Ok(Json(list_audio_for(&app, user.id, OWNER_STATUSES).await?))
+}
+
+// Resolves the username in a public URL to the account it names.
+//
+// Exact match, because that is how `users.username` is unique: /u/Alice and /u/alice are two
+// different addresses and at most one of them is anybody. NotFound for a name nobody has —
+// which is a different answer from an account that exists and has uploaded nothing, since that
+// one is an empty list rather than a missing page.
+async fn resolve_username(pool: &PgPool, username: &str) -> Result<i64, AudioError> {
+    let row: Option<(i64,)> = sqlx::query_as("SELECT id FROM users WHERE username = $1")
+        .bind(username)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| {
+            eprintln!("query failed: {e}");
+            AudioError::Internal
+        })?;
+
+    row.map(|(id,)| id).ok_or(AudioError::NotFound)
+}
+
+// One account's public library: everything it has uploaded, readable by anyone holding the
+// link and without signing in. Deliberately not behind AuthUser — the whole point of the link
+// is that it works for someone who has no account here.
+//
+// Read-only by construction rather than by a check. There is no public route that writes, so
+// there is nothing on this side for a visitor to be refused: upload, delete and the progress
+// stream all still take AuthUser and are all still keyed to the caller's own user_id.
+async fn list_user_audio(
+    State(app): State<AppState>,
+    Path(username): Path<String>,
+) -> Result<Json<Vec<AudioFile>>, AudioError> {
+    let user_id = resolve_username(&app.pool, &username).await?;
+    Ok(Json(list_audio_for(&app, user_id, PUBLIC_STATUSES).await?))
 }
 
 // A Content-Disposition filename is a quoted header value, not free text: reject anything
@@ -820,14 +876,46 @@ async fn download_audio(
     Query(query): Query<DownloadQuery>,
     headers: axum::http::HeaderMap,
 ) -> Result<Response, AudioError> {
-    let (key, filename) = match query.tier.as_deref() {
+    download_audio_for(&app, user.id, id, query.tier.as_deref(), &headers).await
+}
+
+// The public twin of the route above: one track out of one account's public library, for
+// anyone with the link.
+//
+// Tiers only — a request with no `?tier=` is a 404 here rather than the source. The source is
+// whatever the uploader handed us, commonly a ~1GB WAV, and putting that behind a URL that
+// needs no account is a different offer from "you can play these". Every tier is a faststart
+// MP4 that seeks properly, which is all the player ever asks for.
+async fn download_user_audio(
+    State(app): State<AppState>,
+    Path((username, id)): Path<(String, i64)>,
+    Query(query): Query<DownloadQuery>,
+    headers: axum::http::HeaderMap,
+) -> Result<Response, AudioError> {
+    let target = query.tier.as_deref().ok_or(AudioError::NotFound)?;
+    let user_id = resolve_username(&app.pool, &username).await?;
+    download_audio_for(&app, user_id, id, Some(target), &headers).await
+}
+
+// `user_id` is the account the row must belong to: the caller's own on the private route, the
+// owner of the library on the public one. Either way it stays part of the WHERE, so a row that
+// is not that account's matches nothing and 404s — neither route can be walked sideways onto a
+// file it was not offered by guessing an id.
+async fn download_audio_for(
+    app: &AppState,
+    user_id: i64,
+    id: i64,
+    tier: Option<&str>,
+    headers: &axum::http::HeaderMap,
+) -> Result<Response, AudioError> {
+    let (key, filename) = match tier {
         None => {
             let row: Option<(String, String)> = sqlx::query_as(
                 "SELECT s3_key, filename FROM audio_files
                  WHERE id = $1 AND user_id = $2 AND status = 'uploaded'",
             )
             .bind(id)
-            .bind(user.id)
+            .bind(user_id)
             .fetch_optional(&app.pool)
             .await
             .map_err(|e| {
@@ -852,7 +940,7 @@ async fn download_audio(
                  WHERE id = $1 AND user_id = $2 AND status = 'uploaded' AND {column}"
             ))
             .bind(id)
-            .bind(user.id)
+            .bind(user_id)
             .fetch_optional(&app.pool)
             .await
             .map_err(|e| {
@@ -1102,6 +1190,11 @@ async fn main() {
         .route("/api/audio", post(upload_audio).get(list_audio))
         .route("/api/audio/{id}", get(download_audio).delete(delete_audio))
         .route("/api/audio/{id}/progress", get(audio_progress))
+        // Public, unauthenticated: one account's library by username. No progress stream
+        // twin — a visitor watching someone else's transcode is not worth a public SSE
+        // route holding a Redis subscription per open tab.
+        .route("/api/users/{username}/audio", get(list_user_audio))
+        .route("/api/users/{username}/audio/{id}", get(download_user_audio))
         .with_state(app_state);
 
     let port: u16 = std::env::var("PORT")

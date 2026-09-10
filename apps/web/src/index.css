@@ -83,6 +83,25 @@ input {
   margin-bottom: 2rem;
 }
 
+/* The controls at the right end of the topbar, grouped so that space-between above still
+   puts the account name at one edge and the whole group at the other — loose in the bar,
+   three children would spread evenly and strand Share in the middle of the page. */
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+/* Shown to the owner on their own public page, where the page is otherwise indistinguishable
+   from the private one. Translucent for the same reason the row tints are: it has to sit on
+   either the light or the dark ground. */
+.notice {
+  padding: 0.6rem 0.8rem;
+  border-radius: 6px;
+  border: 1px solid rgba(37, 99, 235, 0.4);
+  background: rgba(37, 99, 235, 0.1);
+}
+
 .upload-button {
   display: inline-block;
   padding: 0.4rem 0.9rem;

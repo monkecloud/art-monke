@@ -38,15 +38,19 @@ function FileMeta({ file }: { file: AudioFile }) {
 function FileRow({
   file,
   playing,
+  live,
   onPlay,
   onDelete,
 }: {
   file: AudioFile
   playing: boolean
+  live: boolean
   onPlay: (file: AudioFile, readyTargets: string[]) => void
-  onDelete: (id: number) => void
+  // Absent on a library that is not the viewer's. The row then has no Delete at all, rather
+  // than a disabled one: a control that exists only to refuse is worse than no control.
+  onDelete?: (id: number) => void
 }) {
-  const states = useTranscodeStates(file)
+  const states = useTranscodeStates(file, live)
 
   const uploaded = file.status === 'uploaded'
   // Ascending, because `states` is. The player is never given the source file, so until one
@@ -94,17 +98,19 @@ function FileRow({
       <div className="file-main">
         <span className="file-name">{file.filename}</span>
         {badge && <span className={`status-badge ${badge.className}`}>{badge.text}</span>}
-        <button
-          type="button"
-          className="link"
-          onClick={(e) => {
-            // Without this the row underneath would start playing the file being deleted.
-            e.stopPropagation()
-            onDelete(file.id)
-          }}
-        >
-          Delete
-        </button>
+        {onDelete && (
+          <button
+            type="button"
+            className="link"
+            onClick={(e) => {
+              // Without this the row underneath would start playing the file being deleted.
+              e.stopPropagation()
+              onDelete(file.id)
+            }}
+          >
+            Delete
+          </button>
+        )}
       </div>
       <FileMeta file={file} />
       {showBars && <TranscodeBars states={states} />}
@@ -139,6 +145,8 @@ export function FileList({
   files,
   uploads,
   playingId,
+  live,
+  emptyMessage,
   onPlay,
   onDelete,
 }: {
@@ -146,11 +154,16 @@ export function FileList({
   uploads: PendingUpload[]
   // Which row the player is on, if any. Null while nothing is loaded.
   playingId: number | null
+  // Whether rows may open their own transcode-progress stream. Off for a public library,
+  // whose files are not the viewer's and whose progress route would 404 for them.
+  live: boolean
+  emptyMessage: string
   onPlay: (file: AudioFile, readyTargets: string[]) => void
-  onDelete: (id: number) => void
+  // Omitted on a public library, which is read-only.
+  onDelete?: (id: number) => void
 }) {
   if (files.length === 0 && uploads.length === 0) {
-    return <p className="muted">No files uploaded yet.</p>
+    return <p className="muted">{emptyMessage}</p>
   }
 
   return (
@@ -167,6 +180,7 @@ export function FileList({
           key={file.id}
           file={file}
           playing={file.id === playingId}
+          live={live}
           onPlay={onPlay}
           onDelete={onDelete}
         />
