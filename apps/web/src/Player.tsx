@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import type { AudioFile } from './audioFiles'
+import { formatDuration } from './format'
 
+// The element reports NaN for both of these until its metadata lands, and formatDuration
+// returns null rather than guessing — a clock that has not started reads 0:00.
 function formatTime(seconds: number): string {
-  if (!Number.isFinite(seconds)) return '0:00'
-  const m = Math.floor(seconds / 60)
-  const s = Math.floor(seconds % 60)
-  return `${m}:${s.toString().padStart(2, '0')}`
+  return formatDuration(seconds) ?? '0:00'
 }
 
 // Volume is a per-browser preference, not per-track and not per-session, so it outlives both
@@ -141,23 +141,31 @@ export function Player({ file, readyTargets }: { file: AudioFile; readyTargets: 
         onEnded={() => setIsPlaying(false)}
       />
       <span className="player-name">{file.filename}</span>
-      <button type="button" onClick={togglePlay}>
-        {isPlaying ? 'Pause' : 'Play'}
-      </button>
-      <button type="button" onClick={stop}>
-        Stop
-      </button>
-      <span className="player-time">{formatTime(currentTime)}</span>
-      <input
-        type="range"
-        className="player-seek"
-        min={0}
-        max={duration || 0}
-        step={0.1}
-        value={currentTime}
-        onChange={seek}
-      />
-      <span className="player-time">{formatTime(duration)}</span>
+      {/* Transport and scrubber are grouped rather than loose in the bar so that at phone
+          width the bar can wrap into rows — name, scrubber, controls — instead of squeezing
+          nine flex children onto one line and leaving the seek bar a few pixels wide. */}
+      <div className="player-transport">
+        <button type="button" onClick={togglePlay}>
+          {isPlaying ? 'Pause' : 'Play'}
+        </button>
+        <button type="button" onClick={stop}>
+          Stop
+        </button>
+      </div>
+      <div className="player-scrub">
+        <span className="player-time">{formatTime(currentTime)}</span>
+        <input
+          type="range"
+          className="player-seek"
+          aria-label="Seek"
+          min={0}
+          max={duration || 0}
+          step={0.1}
+          value={currentTime}
+          onChange={seek}
+        />
+        <span className="player-time">{formatTime(duration)}</span>
+      </div>
       {/* One button per available tier rather than a <select>, so the bitrate in use is
           readable at a glance instead of needing to be opened. A single ready tier still
           renders, because "what am I hearing" is worth answering even without a choice. */}
@@ -177,6 +185,7 @@ export function Player({ file, readyTargets }: { file: AudioFile; readyTargets: 
       <input
         type="range"
         className="player-volume"
+        aria-label="Volume"
         min={0}
         max={1}
         step={0.01}

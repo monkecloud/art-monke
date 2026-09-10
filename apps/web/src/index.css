@@ -119,6 +119,30 @@ input {
   white-space: nowrap;
 }
 
+/* Length and upload age, under the filename. Sits at the same left edge as the name so the
+   two read as one block, and is dimmed to the same grey as the transcode bars beneath it —
+   it is the row's smallest-print information, not a second heading. */
+.file-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  color: #6b7280;
+}
+
+/* A separator before every item but the first, so the line reads correctly whether or not
+   the duration is there to lead it. */
+.file-meta > span + span::before {
+  content: '·';
+  margin-right: 0.5rem;
+}
+
+/* Lining figures, so a column of durations stays vertically aligned digit for digit. */
+.file-duration {
+  font-family: ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
 .status-badge {
   font-size: 0.8rem;
   padding: 0.15rem 0.5rem;
@@ -205,6 +229,23 @@ input {
   white-space: nowrap;
 }
 
+.player-transport {
+  display: flex;
+  flex-shrink: 0;
+  gap: 0.75rem;
+}
+
+/* The elapsed/seek/duration trio. It is the only part of the bar that should absorb the
+   leftover width, hence flex: 1 here and flex-shrink: 0 on everything else. min-width: 0
+   because a flex item will not shrink below its content otherwise. */
+.player-scrub {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  gap: 0.75rem;
+}
+
 .player-time {
   flex-shrink: 0;
   font-family: ui-monospace, monospace;
@@ -213,6 +254,7 @@ input {
 
 .player-seek {
   flex: 1;
+  min-width: 0;
 }
 
 .player-volume {
@@ -326,4 +368,93 @@ input {
 
 .tier-failed .tier-state {
   color: #b91c1c;
+}
+
+/* Phones. The player bar is the one piece of this UI that cannot survive being narrowed:
+   at 360px its nine controls leave the seek bar a few pixels wide. It wraps into three
+   rows instead — filename, scrubber, then the buttons. */
+@media (max-width: 40rem) {
+  main {
+    margin: 2rem auto;
+    /* Clear of the wrapped player bar, which is roughly three times as tall as the
+       single-row one this padding was originally sized for. Generous rather than exact:
+       the bar's height depends on how its last row wraps, which depends on how many tiers
+       are ready. */
+    padding-bottom: 11rem;
+  }
+
+  /* Same treatment as the player bar below: the name gets a line to itself rather than
+     being ellipsised down to nothing so that three links can sit beside it. */
+  .file-main {
+    flex-wrap: wrap;
+    gap: 0.5rem 0.75rem;
+  }
+
+  .file-name {
+    flex: 1 0 100%;
+  }
+
+  .player-bar {
+    flex-wrap: wrap;
+    /* The column gap is tight because the third row — two buttons plus three tier chips —
+       has to fit within 320px, the narrowest phone worth supporting. */
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    /* Above the home indicator on phones that have one, and unchanged on those that
+       don't: the inset is 0 there. */
+    padding-bottom: calc(0.5rem + env(safe-area-inset-bottom));
+  }
+
+  /* Each takes a full row, so the buttons share the third. `order` puts the scrubber
+     above the transport rather than between it and the tier buttons — without it the
+     two full-width rows split the buttons onto a row each and the bar grows to four. */
+  .player-name {
+    flex: 1 0 100%;
+    max-width: none;
+    font-size: 0.9rem;
+    order: 1;
+  }
+
+  .player-scrub {
+    flex: 1 0 100%;
+    order: 2;
+  }
+
+  .player-transport {
+    order: 3;
+  }
+
+  /* Dragged with a fingertip rather than pointed at, so the hit area grows even though
+     the track itself stays the same thickness. */
+  .player-seek {
+    height: 2rem;
+  }
+
+  /* Taller than the desktop button for a fingertip, but no wider than it needs to be —
+     the width is what the controls row is short of at 320px. */
+  .player-transport button {
+    padding: 0.5rem 0.8rem;
+  }
+
+  /* Far end of the controls row, opposite the transport buttons. */
+  .player-tiers {
+    margin-left: auto;
+    gap: 0.25rem;
+    order: 4;
+  }
+
+  /* Vertical padding for the touch target, horizontal pared back to the minimum: the
+     three chips plus the two transport buttons are 8px over a 320px line otherwise, and
+     the chips are the secondary control of the two. The labels are a fixed set
+     (64k/128k/224k), so this budget does not move. */
+  .player-tier {
+    padding: 0.4rem 0.35rem;
+  }
+
+  /* Dropped rather than shrunk: it is the first control to become unusable at this width,
+     and a phone has hardware volume keys. The stored preference is untouched, so it comes
+     back as it was on a wider screen. */
+  .player-volume {
+    display: none;
+  }
 }

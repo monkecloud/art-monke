@@ -567,6 +567,9 @@ struct AudioFile {
     filename: String,
     status: String,
     created_at: String,
+    // Absent until a worker has probed the source, and on files older than the column. The
+    // client shows a length only when there is one.
+    duration_seconds: Option<f64>,
     // Always all three, in TARGETS order, so a client can render a fixed set of rows rather
     // than discovering which tiers exist from the payload.
     transcodes: Vec<TranscodeState>,
@@ -580,6 +583,7 @@ struct AudioFileRow {
     filename: String,
     status: String,
     created_at: String,
+    duration_seconds: Option<f64>,
     #[sqlx(flatten)]
     transcodes: TranscodeRow,
 }
@@ -726,6 +730,7 @@ async fn list_audio(
         r#"SELECT id, filename, status,
                   to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
                       AS created_at,
+                  duration_seconds,
                   {TRANSCODE_COLUMNS}
            FROM audio_files
            WHERE user_id = $1 AND status NOT IN ('deleted', 'delete_pending')
@@ -757,6 +762,7 @@ async fn list_audio(
                 filename: row.filename,
                 status: row.status,
                 created_at: row.created_at,
+                duration_seconds: row.duration_seconds,
             })
             .collect(),
     ))

@@ -96,8 +96,6 @@ export default function App() {
         </button>
       </header>
 
-      <h1>monke-app</h1>
-
       <label className="upload-button">
         Upload audio
         <input

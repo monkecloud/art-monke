@@ -1,0 +1,13 @@
+-- The source's playing time, so the file list can show how long a track is without the
+-- client having to fetch and decode it.
+--
+-- Seconds as DOUBLE PRECISION, matching what ffprobe reports and what the worker already
+-- holds: the worker probes this on every job to turn ffmpeg's progress into a percentage,
+-- so recording it costs nothing beyond the write.
+--
+-- Nullable, and no backfill. Rows that predate this column would each need their source
+-- re-read out of the bucket and probed to fill in; the UI simply omits a duration it does
+-- not have, and any file uploaded from here on gets one as soon as its first tier starts.
+-- A file whose every tier failed terminally also keeps a NULL here, which is honest — the
+-- source never probed.
+ALTER TABLE audio_files ADD COLUMN IF NOT EXISTS duration_seconds DOUBLE PRECISION;

@@ -1,4 +1,5 @@
 import type { AudioFile } from './audioFiles'
+import { formatDuration, formatUploadedAt } from './format'
 import { TranscodeBars, useTranscodeStates } from './TranscodeBars'
 import type { PendingUpload } from './uploadAudio'
 
@@ -16,6 +17,25 @@ function transcodeBadge(
   // some tiers may be servable, so this is not a failed upload, just an incomplete set.
   if (anyFailed) return { className: 'status-transcode-failed', text: 'transcode failed' }
   return null
+}
+
+// Length and age, under the filename. Both are omitted rather than rendered as a
+// placeholder when unavailable: a file has no duration until a worker probes it, and a
+// dash where a number belongs reads as data rather than as its absence.
+function FileMeta({ file }: { file: AudioFile }) {
+  const duration = formatDuration(file.duration_seconds)
+  const uploaded = formatUploadedAt(file.created_at)
+  if (!duration && !uploaded) return null
+
+  return (
+    <div className="file-meta">
+      {duration && <span className="file-duration">{duration}</span>}
+      {uploaded && (
+        // The relative label is not on a timer, so the exact timestamp stays reachable.
+        <span title={uploaded.exact}>{uploaded.label}</span>
+      )}
+    </div>
+  )
 }
 
 function FileRow({
@@ -74,6 +94,7 @@ function FileRow({
           Delete
         </button>
       </div>
+      <FileMeta file={file} />
       {showBars && <TranscodeBars states={states} />}
     </li>
   )

@@ -209,6 +209,7 @@ async fn run_job(
     renew_lease(pool, job, worker_id).await;
 
     let duration = probe_duration(&source_path()).await?;
+    record_duration(pool, job.audio_file_id, duration).await;
     transcode(pool, redis, job, worker_id, &bitrate, duration).await?;
 
     // ffmpeg's exit code is necessary but not sufficient: a zero-byte output that exits 0 is
@@ -437,6 +438,33 @@ async fn probe_duration(path: &Path) -> Result<Option<f64>, Failure> {
         .parse::<f64>()
         .ok()
         .filter(|seconds| *seconds > 0.0))
+}
+
+/// Persists the probed duration onto the file row, so the list can show a track's length.
+///
+/// All three of a file's tiers probe the same source, so this runs up to three times per
+/// file with the same answer; `IS NULL` makes the later ones no-ops rather than repeated
+/// writes. Not folded into the transaction that flags a finished tier, because the duration
+/// is a property of the *source* — it is known as soon as the first job probes, and stays
+/// true even if every transcode then fails.
+///
+/// Failure is swallowed. This is metadata for a list view: losing it must not fail a job
+/// whose actual work — the derivative — is about to succeed. The next tier's probe retries
+/// it for free.
+async fn record_duration(pool: &PgPool, audio_file_id: i64, duration: Option<f64>) {
+    let Some(seconds) = duration else { return };
+
+    if let Err(e) = sqlx::query(
+        "UPDATE audio_files SET duration_seconds = $1
+         WHERE id = $2 AND duration_seconds IS NULL",
+    )
+    .bind(seconds)
+    .bind(audio_file_id)
+    .execute(pool)
+    .await
+    {
+        eprintln!("could not record duration for audio_files {audio_file_id}: {e}");
+    }
 }
 
 async fn transcode(

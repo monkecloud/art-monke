@@ -38,8 +38,6 @@ export function LoginPage({ onSignedIn }: { onSignedIn: (username: string) => vo
 
   return (
     <main>
-      <h1>monke-app</h1>
-
       <form onSubmit={handleSubmit}>
         <label>
           Username
