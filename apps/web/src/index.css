@@ -384,6 +384,19 @@ input {
   align-items: center;
   flex-shrink: 0;
   gap: 0.25rem;
+  /* Fenced off from the scrubber on one side and the volume slider on the other. It is a
+     third thing rather than part of either, and abutting both it read as whichever it
+     happened to be nearer. */
+  border-inline: 1px solid rgba(255, 255, 255, 0.2);
+  padding-inline: 0.75rem;
+}
+
+/* Says what the number is. Dimmer than the readout beside it, which is the part that
+   changes and so the part worth looking at. */
+.player-speed-label {
+  margin-right: 0.25rem;
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.55);
 }
 
 .player-speed-step {
@@ -573,10 +586,22 @@ input {
     padding: 0.5rem 0.8rem;
   }
 
-  /* Far end of the controls row, opposite the transport buttons. */
+  /* Far end of the controls row, opposite the transport buttons. No rules here: the volume
+     slider is gone at this width, so the right-hand one would fence off the edge of the
+     screen, and the left one would sit alone in the gap rather than between two things. */
   .player-speed {
     margin-left: auto;
     order: 4;
+    border-inline: 0;
+    padding-inline: 0;
+  }
+
+  /* Dropped for the same reason the volume slider below is: the controls row has to fit
+     within 320px, and the word is what tips it over into a fourth row there. The steppers
+     either side of a percentage are legible without it, and their aria-labels are untouched,
+     so nothing is lost to a screen reader. */
+  .player-speed-label {
+    display: none;
   }
 
   /* Vertical padding for the touch target, horizontal pared back to the minimum: the two

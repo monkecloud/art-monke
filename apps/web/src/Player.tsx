@@ -350,6 +350,7 @@ export function Player({
           file's own duration — at 90% a 3:00 track still says 3:00 and simply takes longer
           to get there, which is the honest reading of where you are in the file. */}
       <div className="player-speed">
+        <span className="player-speed-label">Speed</span>
         <button
           type="button"
           className="player-speed-step"
