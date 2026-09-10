@@ -35,7 +35,7 @@ spec:
         - name: app
           # CI rewrites this tag on every push. Never `:latest` — the tag is how rollback
           # works, and a moving tag means a restarted pod silently changes version.
-          image: ghcr.io/monkecloud/art-monke:f1c837e
+          image: ghcr.io/monkecloud/art-monke:0a3e9d7
           ports:
             - containerPort: 8080
           # Readiness is what pulls a pod out of the Service's endpoints; without it a
