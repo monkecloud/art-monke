@@ -70,7 +70,7 @@ export function SharedLibrary({ username, session }: { username: string; session
   // media-session card is torn down: the title should not outlive the page that set it.
   useEffect(() => {
     const previous = document.title
-    document.title = `${username} — art-monke`
+    document.title = `${username} | art-monke`
     return () => {
       document.title = previous
     }
