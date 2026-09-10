@@ -376,40 +376,57 @@ input {
   flex-shrink: 0;
 }
 
-/* Which bitrate is playing, and the others available. Sits next to the volume slider rather
-   than by the track name, because it is a playback control, not metadata about the file. */
-.player-tiers {
+/* Playback speed: a readout between two steppers, where the bitrate chips used to be. Next
+   to the volume slider rather than by the track name, because it is a playback control and
+   not metadata about the file. */
+.player-speed {
   display: flex;
+  align-items: center;
   flex-shrink: 0;
-  gap: 0.15rem;
+  gap: 0.25rem;
 }
 
-.player-tier {
+.player-speed-step {
   font: inherit;
-  font-size: 0.7rem;
-  padding: 0.15rem 0.35rem;
+  font-size: 0.8rem;
+  line-height: 1;
+  padding: 0.2rem 0.4rem;
   border: 1px solid rgba(255, 255, 255, 0.3);
   border-radius: 4px;
   background: none;
-  color: rgba(255, 255, 255, 0.65);
+  color: rgba(255, 255, 255, 0.8);
   cursor: pointer;
 }
 
-.player-tier-active {
-  border-color: #fff;
+.player-speed-step:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.15);
   color: #fff;
+}
+
+/* At the ends of the range. Dimmed in place rather than removed: the two are one control,
+   and dropping either would slide the readout sideways at the moment it is being read. */
+.player-speed-step:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* Wide enough for the longest reading it can hold — "102.5%" — so that neither stepper
+   moves as the digits change, and lining figures so the number itself does not jitter. */
+.player-speed-value {
+  min-width: 3.5rem;
+  text-align: center;
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A line of its own under the name and meta, across both of the row's columns. */
+.file-row > .transcodes {
+  grid-column: 1 / -1;
 }
 
 /* Transcode tiers: one row per tier, each a label, a bar and a state. Laid out on a grid so
    the bars line up with each other regardless of how wide the state text is -- which matters
    again the moment the ladder is more than one tier. */
-/* The one part of a row that wraps: a full-width line under the name and meta. A width
-   rather than a flex-basis, which would mean a height once the row stacks on a phone. */
-.file-row > .transcodes {
-  width: 100%;
-}
-
 .transcodes {
   display: grid;
   grid-template-columns: 2.5rem 1fr 3.5rem;
@@ -557,18 +574,16 @@ input {
   }
 
   /* Far end of the controls row, opposite the transport buttons. */
-  .player-tiers {
+  .player-speed {
     margin-left: auto;
-    gap: 0.25rem;
     order: 4;
   }
 
-  /* Vertical padding for the touch target, horizontal pared back to the minimum. Sized when
-     the ladder was 64k/128k/224k, where those three chips plus the two transport buttons ran
-     8px over a 320px line; a single 224k chip clears that easily. Left as it is rather than
-     retuned, because it is what a re-added tier would need again. */
-  .player-tier {
-    padding: 0.4rem 0.35rem;
+  /* Vertical padding for the touch target, horizontal pared back to the minimum: the two
+     steppers and the readout share the controls row with both transport buttons, and that
+     row has to fit within 320px. */
+  .player-speed-step {
+    padding: 0.4rem 0.5rem;
   }
 
   /* Dropped rather than shrunk: it is the first control to become unusable at this width,
