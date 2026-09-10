@@ -1,0 +1,36 @@
+# A real Cargo workspace, so `api` and `worker` can share one crate (`apps/common`) instead
+# of keeping a third and fourth copy of the Postgres/S3/Redis setup between them.
+#
+# The consequence for the build: a crate outside a Docker build context is invisible to it,
+# so both Rust Dockerfiles build from the repo root rather than from apps/<service>, and
+# .github/workflows/build-and-deploy.yml passes each one its context explicitly.
+[workspace]
+resolver = "2"
+members = ["apps/api", "apps/common", "apps/worker"]
+
+# Versions live here so the three members cannot drift onto different builds of the same
+# crate — `common` hands sqlx pools and reqwest responses across the boundary, and two
+# versions of either would not be the same type.
+[workspace.dependencies]
+monke-common = { path = "apps/common" }
+# `aio` + `tokio-comp` only: no sync client, and none of the cluster/sentinel machinery —
+# this is one single-pod cache reached over a ClusterIP Service.
+redis = { version = "1.7", default-features = false, features = ["aio", "tokio-comp"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "stream"] }
+rusty-s3 = "0.10.2"
+serde = { version = "1", features = ["derive"] }
+# For hashing upload bodies. Already in the tree via rusty-s3's request signing, so this
+# pins the same major version rather than pulling a second copy in.
+sha2 = "0.10"
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls",
+    "postgres",
+] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+url = "2.5.8"
+
+# Profiles are workspace-level only: left in apps/api/Cargo.toml this would be ignored with
+# a warning, and the api image would quietly grow its debug symbols back.
+[profile.release]
+strip = true

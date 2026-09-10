@@ -70,8 +70,12 @@ The `redis://:<password>@...` form sends an empty username and the server answer
 - **Pod Security `baseline` is enforced.** No `privileged`, no `hostPath`, no
   `hostNetwork`/`hostPID`, no host ports. Warnings about the stricter `restricted` profile
   are advisory.
-- **Resource budget** per namespace: 10 pods, 1 CPU / 2Gi requested, 2 CPU / 4Gi limit,
-  3 PVCs. Nodes are 4-core with 1GbE between them.
+- **Resource budget** per namespace: 25 pods, 2 CPU / 4Gi requested, 4 CPU / 8Gi limit,
+  3 PVCs. Nodes are 4-core with 1GbE between them. The shared default is lower (10 pods,
+  1 CPU / 2Gi, 2 CPU / 4Gi); this namespace is raised above it by an overlay patch in the
+  infra repo, for the transcode workers. Ephemeral storage is not in the quota at all, so a
+  pod's `ephemeral-storage` request is per-pod hygiene rather than a quota negotiation.
+  Budget a rolling update's surge pod when totalling limits: `web` and `api` each add one.
 
 ## Services
 
@@ -80,10 +84,22 @@ image, and each with a Deployment in `k8s/`:
 
 - `apps/web` — TypeScript + Vite + React, built and served by nginx. `ghcr.io/monkecloud/monke-app`.
 - `apps/api` — Rust + tokio + axum. `ghcr.io/monkecloud/monke-app/api`.
+- `apps/worker` — Rust. Transcodes uploads into AAC tiers by consuming the `transcode_jobs`
+  queue in Postgres. `ghcr.io/monkecloud/monke-app/worker`. No Service and no Ingress path:
+  it is not web-facing, so it needs neither.
+
+The two Rust services are one **Cargo workspace** rooted at the repo root, sharing
+`apps/common` (Postgres/Garage/Redis wiring and the transcode target list). A path dependency
+outside a Docker build context does not exist as far as the build is concerned, so both Rust
+images build with the **repo root as their context** and name their Dockerfile explicitly;
+`.dockerignore` at the root is what keeps that context from including every `target/` and
+`node_modules/`. `apps/web` still builds from its own directory. `Cargo.lock` is at the root
+and covers all three crates, and `[profile.*]` only takes effect there.
 
 CI builds every service as a matrix and commits a single tag bump once all of them succeed,
 so a half-built set never reaches Flux. Every service ships on the short SHA of the commit
-that built it, so one tag describes the whole repo and a rollback stays one revert.
+that built it, so one tag describes the whole repo and a rollback stays one revert. Each
+matrix entry carries its own `context` and `dockerfile`.
 
 Traefik routes by path prefix on the one hostname — `/api` to the api, `/` to web. The
 prefix is not stripped, so the api serves its routes under `/api`. A new service needs a

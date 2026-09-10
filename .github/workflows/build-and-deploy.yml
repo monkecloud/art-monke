@@ -40,10 +40,23 @@ jobs:
           # `suffix` is appended to the repo's own GHCR path. web keeps the bare name it
           # has always had — renaming it would create a new, private package that the
           # ghcr-creds pull secret has never been granted.
+          #
+          # `context` is per service because the two Rust images are one Cargo workspace:
+          # they share apps/common, and a path dependency outside the build context does not
+          # exist as far as the build is concerned. So they build from the repo root and name
+          # their Dockerfile explicitly, while web still builds from its own directory.
           - service: web
             suffix: ''
+            context: apps/web
+            dockerfile: apps/web/Dockerfile
           - service: api
             suffix: /api
+            context: .
+            dockerfile: apps/api/Dockerfile
+          - service: worker
+            suffix: /worker
+            context: .
+            dockerfile: apps/worker/Dockerfile
     steps:
       - uses: actions/checkout@v4
 
@@ -63,7 +76,8 @@ jobs:
 
       - uses: docker/build-push-action@v6
         with:
-          context: apps/${{ matrix.service }}
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
           push: true
           tags: ${{ steps.img.outputs.name }}:${{ needs.tag.outputs.tag }}
           # Scoped per service so web's cache cannot evict api's. Without this the Rust
@@ -72,7 +86,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
 
   # Separate from build, and needing all of it: a half-built set must never be committed,
-  # or Flux rolls out a tag that exists for one service and not the other. One job also
+  # or Flux rolls out a tag that exists for some services and not the rest. One job also
   # means one commit and one push, so parallel builds cannot race each other on the branch.
   deploy:
     needs: [tag, build]

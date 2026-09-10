@@ -1,0 +1,15 @@
+# Shared by `api` and `worker`. Everything here was already in `api` and would otherwise
+# have been copy-pasted into `worker`: the same Postgres wiring, the same Garage bucket
+# setup, the same sign-then-send S3 request shape, and the list of transcode targets that
+# both sides have to agree on exactly.
+[package]
+name = "monke-common"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+redis = { workspace = true }
+reqwest = { workspace = true }
+rusty-s3 = { workspace = true }
+sqlx = { workspace = true }
+url = { workspace = true }

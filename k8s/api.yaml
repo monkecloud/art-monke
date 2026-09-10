@@ -31,7 +31,7 @@ spec:
         - name: api
           # CI rewrites this tag on every push, to the same tag web.yaml gets — both images
           # are built from the commit they are tagged with.
-          image: ghcr.io/monkecloud/monke-app/api:7c5f01b
+          image: ghcr.io/monkecloud/monke-app/api:21d21f3
           ports:
             - containerPort: 8080
           # Postgres, as libpq variables rather than one URL. The credential is the
@@ -58,6 +58,29 @@ spec:
             - name: PGDATABASE
               valueFrom:
                 configMapKeyRef: { name: monke-app-db, key: database }
+            # The bucket-scoped Garage credentials this app's own key can read/write. The
+            # `endpoint` key (not `endpoint_external`) is the in-cluster one: the api talks
+            # to Garage itself rather than handing a URL to the browser, since Garage has no
+            # public Ingress.
+            - name: S3_ENDPOINT
+              valueFrom:
+                secretKeyRef: { name: monke-app-garage, key: endpoint }
+            - name: S3_BUCKET
+              valueFrom:
+                secretKeyRef: { name: monke-app-garage, key: bucket }
+            - name: S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef: { name: monke-app-garage, key: access_key }
+            - name: S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef: { name: monke-app-garage, key: secret_key }
+            # Transcode progress, which the worker writes and /api/audio/{id}/progress streams
+            # out. Read-only as far as this pod is concerned, and never load-bearing: every
+            # read degrades to "no percentage yet" if the cache is down. Host and port are
+            # constants in the code, like S3_REGION — this repo's own redis.yaml sets them.
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: monke-app-redis, key: password }
           readinessProbe:
             httpGet: { path: /healthz, port: 8080 }
             periodSeconds: 5

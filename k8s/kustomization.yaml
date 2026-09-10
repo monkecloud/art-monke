@@ -5,6 +5,7 @@ kind: Kustomization
 resources:
   - web.yaml
   - api.yaml
+  - worker.yaml
   - ingress.yaml
   # This repo's own cache. Best-effort by design — read the header in the file. Its
   # password Secret (monke-app-redis) is applied from the infra repo, per namespace.

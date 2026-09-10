@@ -17,10 +17,10 @@ metadata:
 spec:
   ingressClassName: traefik
   tls:
-    - hosts: [app.monke.ca]
+    - hosts: [art.monke.ca]
       secretName: monke-app-tls
   rules:
-    - host: app.monke.ca
+    - host: art.monke.ca
       http:
         paths:
           # /api first for readability; Traefik matches the longer prefix regardless of

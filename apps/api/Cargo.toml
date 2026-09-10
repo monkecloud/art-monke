@@ -4,20 +4,22 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+monke-common = { workspace = true }
+argon2 = "0.5"
 axum = "0.8"
-serde = { version = "1", features = ["derive"] }
+axum-extra = { version = "0.12.6", features = ["cookie"] }
+# Needed to hand axum's Sse a stream: one snapshot event chained in front of the Redis
+# pub/sub stream, so a client that connects mid-transcode is not blank until the next tick.
+futures = "0.3"
+redis = { workspace = true }
+reqwest = { workspace = true }
+rusty-s3 = { workspace = true }
+serde = { workspace = true }
+sha2 = { workspace = true }
 # `macros` is needed for migrate!, which embeds migrations/ into the binary. It does not
 # imply a database at build time — only the query!/query_as! macros check against a live
 # one, and this crate deliberately uses the runtime query functions instead so CI can build
-# without Postgres.
-sqlx = { version = "0.8", default-features = false, features = [
-    "runtime-tokio",
-    "tls-rustls",
-    "postgres",
-    "migrate",
-    "macros",
-] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
-
-[profile.release]
-strip = true
+# without Postgres. `worker` needs neither: it never runs migrations.
+sqlx = { workspace = true, features = ["migrate", "macros"] }
+tokio = { workspace = true }
+url = { workspace = true }

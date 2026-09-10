@@ -1,0 +1,22 @@
+# The transcode worker: claims a job from Postgres, shells out to ffmpeg, writes the
+# derivative back to the bucket. No HTTP server, so no axum.
+[package]
+name = "monke-worker"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+monke-common = { workspace = true }
+redis = { workspace = true }
+reqwest = { workspace = true }
+# `derive` is just the FromRow derive — no database at build time, unlike the query! macros.
+# Deliberately no `migrate`: the worker never applies the schema. The api owns it, and two
+# things racing to apply it is a problem with no upside.
+sqlx = { workspace = true, features = ["derive"] }
+# Beyond the workspace set: `process` to run ffmpeg/ffprobe, `io-util` to read its progress
+# pipe a line at a time, `fs` for the scratch files, `time` for the idle sleep and the
+# lease-renewal clock.
+tokio = { workspace = true, features = ["process", "io-util", "fs", "time"] }
+# Just ReaderStream, to hand the finished .m4a to reqwest as a stream instead of reading a
+# couple of hundred megabytes into memory to upload it.
+tokio-util = { version = "0.7", default-features = false, features = ["io"] }
