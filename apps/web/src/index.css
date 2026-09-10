@@ -98,10 +98,18 @@ input {
 
 .file-row {
   display: flex;
-  align-items: center;
-  gap: 0.75rem;
+  flex-direction: column;
+  gap: 0.4rem;
   padding: 0.5rem 0;
   border-bottom: 1px solid rgba(107, 114, 128, 0.3);
+}
+
+/* The file and its controls: what .file-row itself used to be, before the transcode tiers
+   needed a second line beneath it. */
+.file-main {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
 }
 
 .file-name {
@@ -221,4 +229,79 @@ input {
 .player-volume {
   width: 6rem;
   flex-shrink: 0;
+}
+
+/* Transcode tiers: one row of three, each a label, a bar and a state. Laid out on a grid so
+   the three bars line up with each other regardless of how wide the state text is. */
+.transcodes {
+  display: grid;
+  grid-template-columns: 2.5rem 1fr 3.5rem;
+  gap: 0.2rem 0.5rem;
+  align-items: center;
+  font-size: 0.75rem;
+  color: #6b7280;
+}
+
+.tier {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+}
+
+.tier-label {
+  font-family: ui-monospace, monospace;
+}
+
+.tier-track {
+  height: 0.4rem;
+  border-radius: 999px;
+  overflow: hidden;
+  /* The empty-bar colour. Pending tiers show only this, so it has to read as "nothing has
+     happened here yet" rather than as a bar at zero. */
+  background: rgba(107, 114, 128, 0.25);
+}
+
+.tier-fill {
+  height: 100%;
+  border-radius: 999px;
+  /* Eased because progress arrives in visible jumps — a worker reports whole percentages, and
+     only when they change. */
+  transition: width 0.3s ease-out;
+}
+
+.tier-state {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Queued but unclaimed: deliberately not the running colour, so "nobody has started this" is
+   distinguishable at a glance from "this is at 0%". The track is left empty and the label is
+   dimmed rather than coloured. */
+.tier-pending .tier-state {
+  color: #9ca3af;
+  font-style: italic;
+}
+
+.tier-running .tier-fill {
+  background: #2563eb;
+}
+
+.tier-running .tier-state {
+  color: #2563eb;
+}
+
+.tier-ready .tier-fill {
+  background: #15803d;
+}
+
+.tier-ready .tier-state {
+  color: #15803d;
+}
+
+.tier-failed .tier-track {
+  background: rgba(185, 28, 28, 0.25);
+}
+
+.tier-failed .tier-state {
+  color: #b91c1c;
 }

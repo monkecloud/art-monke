@@ -15,6 +15,7 @@ redis = { workspace = true }
 reqwest = { workspace = true }
 rusty-s3 = { workspace = true }
 serde = { workspace = true }
+sha2 = { workspace = true }
 # `macros` is needed for migrate!, which embeds migrations/ into the binary. It does not
 # imply a database at build time — only the query!/query_as! macros check against a live
 # one, and this crate deliberately uses the runtime query functions instead so CI can build

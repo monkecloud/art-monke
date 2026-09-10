@@ -4,7 +4,7 @@ import { FileList } from './FileList'
 import { LoginPage } from './LoginPage'
 import { Player } from './Player'
 import { ToastStack, useToasts } from './Toasts'
-import { uploadAudio } from './uploadAudio'
+import { uploadAll } from './uploadAudio'
 
 type Session =
   | { kind: 'loading' }
@@ -100,20 +100,31 @@ export default function App() {
         <input
           type="file"
           accept="audio/*"
+          multiple
           hidden
           onChange={(e) => {
-            const file = e.target.files?.[0]
+            const chosen = Array.from(e.target.files ?? [])
+            // Cleared immediately so picking the same files again still fires a change event.
             e.target.value = ''
-            if (!file) return
+            if (chosen.length === 0) return
 
-            // Stands in for the real row until refreshFiles() replaces it: the server
-            // already has an 'uploading' row for this at this point, but the client has no
-            // way to know its id until the whole request settles.
+            // Stand in for the real rows until refreshFiles() replaces them: the server
+            // already has an 'uploading' row for each at this point, but the client has no
+            // way to know the ids until each request settles. Negative ids so they cannot
+            // collide with a real one, and distinct so React keys stay unique across a batch.
             setFiles((fs) => [
-              { id: -Date.now(), filename: file.name, status: 'uploading', created_at: '' },
+              ...chosen.map((file, i) => ({
+                id: -Date.now() - i,
+                filename: file.name,
+                status: 'uploading',
+                created_at: '',
+                transcodes: [],
+              })),
               ...fs,
             ])
-            uploadAudio(file, toasts, refreshFiles)
+            // Refreshes as each file settles rather than only at the end, so finished uploads
+            // appear — and start showing transcode progress — while the rest are still going.
+            void uploadAll(chosen, toasts, refreshFiles)
           }}
         />
       </label>

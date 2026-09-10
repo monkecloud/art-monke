@@ -12,7 +12,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use monke_common::s3::M4A_CONTENT_TYPE;
-use monke_common::targets::{derivative_key, progress_key, target_bitrate, target_column};
+use monke_common::targets::{
+    derivative_key, progress_key, target_bitrate, target_column, PROGRESS_FAILED, PROGRESS_READY,
+};
 use monke_common::{pg_pool, redis_client, S3Store};
 use sqlx::postgres::PgPool;
 use tokio::fs;
@@ -116,7 +118,7 @@ async fn main() {
                     job.id, job.target, job.audio_file_id, job.attempts
                 );
                 if let Err(failure) = run_job(&pool, &s3, &redis, &worker_id, &job).await {
-                    record_failure(&pool, &job, failure).await;
+                    record_failure(&pool, &redis, &job, failure).await;
                 }
             }
             Ok(None) => tokio::time::sleep(IDLE_SLEEP).await,
@@ -266,11 +268,15 @@ async fn run_job(
         .map_err(|e| Failure::Retryable(format!("commit failed: {e}")))?;
 
     eprintln!("job {} done ({} bytes at {})", job.id, size, key);
+
+    // After the commit, never before: this announces a fact about Postgres, so publishing it
+    // first would let a listener show a tier as ready while the flag could still roll back.
+    publish_terminal(redis, job, PROGRESS_READY).await;
     Ok(())
 }
 
 /// Puts the queue row somewhere a retry — or a human — can act on.
-async fn record_failure(pool: &PgPool, job: &Job, failure: Failure) {
+async fn record_failure(pool: &PgPool, redis: &redis::Client, job: &Job, failure: Failure) {
     let (status, error) = match failure {
         // Back to 'pending' only while the claim query would still pick it up. Past the cap
         // it has to be 'failed', or it sits 'pending' forever as a row nothing will select
@@ -298,6 +304,32 @@ async fn record_failure(pool: &PgPool, job: &Job, failure: Failure) {
     {
         // Nothing left to do but log: the lease lapses and another worker re-claims it.
         eprintln!("job {}: could not record failure: {e}", job.id);
+    }
+
+    // Only for a final failure. A retryable one goes back to 'pending', which to anyone
+    // watching is still "queued" — announcing it as failed would be wrong and would make a
+    // tier flicker red on its way to succeeding.
+    if status == "failed" {
+        publish_terminal(redis, job, PROGRESS_FAILED).await;
+    }
+}
+
+/// Announces a tier's final state to whoever is subscribed.
+///
+/// Opens its own connection rather than borrowing the ProgressReporter's: this fires once per
+/// job, not once per tick, and the reporter's connection has already been dropped by the time a
+/// job finishes. Best-effort like every other cache write — a listener that misses this still
+/// gets the right answer from the next snapshot or list refresh.
+async fn publish_terminal(client: &redis::Client, job: &Job, payload: &str) {
+    let key = progress_key(job.audio_file_id, &job.target);
+    let result = async {
+        let mut conn = client.get_multiplexed_async_connection().await?;
+        redis::AsyncCommands::publish::<_, _, ()>(&mut conn, &key, payload).await
+    }
+    .await;
+
+    if let Err(e) = result {
+        eprintln!("job {}: could not publish '{payload}': {e}", job.id);
     }
 }
 

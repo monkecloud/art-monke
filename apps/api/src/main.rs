@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use argon2::password_hash::rand_core::{OsRng, RngCore};
@@ -13,10 +14,13 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::{routing::get, routing::post, Json, Router};
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
-use futures::{Stream, StreamExt};
-use monke_common::targets::{progress_key, target_from_progress_key};
+use futures::{Stream, StreamExt, TryStreamExt};
+use monke_common::targets::{
+    progress_key, target_from_progress_key, PROGRESS_FAILED, PROGRESS_READY,
+};
 use monke_common::{redis_client, S3Store, TARGETS};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use sqlx::postgres::PgPool;
 use tokio::signal::unix::{signal, SignalKind};
 
@@ -69,12 +73,16 @@ impl IntoResponse for AuthError {
     }
 }
 
+fn to_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 // 32 random bytes looked up in `sessions`, not a JWT or signed cookie: revoking one is a
 // DELETE rather than needing a key-rotation or blocklist story.
 fn random_token() -> String {
     let mut bytes = [0u8; 32];
     OsRng.fill_bytes(&mut bytes);
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    to_hex(&bytes)
 }
 
 async fn start_session(
@@ -242,19 +250,41 @@ enum AudioError {
     LengthRequired,
     TooLarge,
     NotFound,
+    // Carries the id of the file this upload duplicated, so the client can point the user at
+    // what they already have instead of just refusing.
+    Duplicate { existing_id: i64 },
     UploadFailed,
     DownloadFailed,
     Internal,
 }
 
+// The duplicate case is the only one a client needs to act on programmatically, so it is the
+// only one with a structured body; the rest stay plain text as they were.
+#[derive(Serialize)]
+struct DuplicateBody {
+    duplicate_of: i64,
+}
+
 impl IntoResponse for AudioError {
     fn into_response(self) -> Response {
+        if let AudioError::Duplicate { existing_id } = self {
+            return (
+                StatusCode::CONFLICT,
+                Json(DuplicateBody {
+                    duplicate_of: existing_id,
+                }),
+            )
+                .into_response();
+        }
+
         let (status, body) = match self {
             AudioError::LengthRequired => {
                 (StatusCode::LENGTH_REQUIRED, "content-length required\n")
             }
             AudioError::TooLarge => (StatusCode::PAYLOAD_TOO_LARGE, "file too large\n"),
             AudioError::NotFound => (StatusCode::NOT_FOUND, "not found\n"),
+            // Handled above; matched here only because the compiler needs it to be.
+            AudioError::Duplicate { .. } => (StatusCode::CONFLICT, "duplicate\n"),
             AudioError::UploadFailed => (StatusCode::BAD_GATEWAY, "upload failed\n"),
             AudioError::DownloadFailed => (StatusCode::BAD_GATEWAY, "download failed\n"),
             AudioError::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal error\n"),
@@ -271,6 +301,76 @@ struct UploadedFile {
 #[derive(Deserialize)]
 struct UploadQuery {
     filename: String,
+}
+
+fn is_unique_violation(e: &sqlx::Error) -> bool {
+    e.as_database_error()
+        .and_then(|d| d.code())
+        .is_some_and(|code| code == "23505")
+}
+
+// Unwinds an upload that turned out to duplicate one this user already has: the object this
+// request just wrote is removed, its row is retired, and the original's id is looked up so the
+// response can name it.
+//
+// Returns the error to answer with rather than a Result, because every path through here still
+// owes the client a response — the upload did not land, whatever else went wrong on the way.
+async fn discard_duplicate(
+    app: &AppState,
+    file_id: i64,
+    key: &str,
+    user_id: i64,
+    filename: &str,
+    content_hash: &str,
+) -> AudioError {
+    // Safe to remove: this is the redundant second copy, written under its own random key.
+    // The original row's object lives at a different key entirely and is untouched.
+    let deleted = app.s3.delete(key).await;
+    if let Err(e) = &deleted {
+        eprintln!("s3 delete of duplicate object failed: {e}");
+    }
+
+    // 'deleted' only when the object is definitely gone; 'delete_pending' when it might not
+    // be. Same distinction the failed-PUT path draws, so a reaper inherits exactly the rows
+    // that still need looking at and none that don't.
+    let status = if deleted.is_ok() {
+        "deleted"
+    } else {
+        "delete_pending"
+    };
+    if let Err(e) =
+        sqlx::query("UPDATE audio_files SET status = $2 WHERE id = $1 AND status = 'uploading'")
+            .bind(file_id)
+            .bind(status)
+            .execute(&app.pool)
+            .await
+    {
+        eprintln!("query failed: {e}");
+    }
+
+    let existing: Result<Option<(i64,)>, sqlx::Error> = sqlx::query_as(
+        "SELECT id FROM audio_files
+         WHERE user_id = $1 AND filename = $2 AND content_hash = $3 AND status = 'uploaded'",
+    )
+    .bind(user_id)
+    .bind(filename)
+    .bind(content_hash)
+    .fetch_optional(&app.pool)
+    .await;
+
+    match existing {
+        Ok(Some((existing_id,))) => AudioError::Duplicate { existing_id },
+        // The row it collided with was deleted in the gap between the violation and this
+        // lookup. Nothing was stored either way, so this cannot be reported as success.
+        Ok(None) => {
+            eprintln!("duplicate of a row that no longer exists");
+            AudioError::Internal
+        }
+        Err(e) => {
+            eprintln!("query failed: {e}");
+            AudioError::Internal
+        }
+    }
 }
 
 // Proxies the upload to Garage rather than handing the client a presigned URL: Garage has
@@ -319,10 +419,35 @@ async fn upload_audio(
         AudioError::Internal
     })?;
 
-    let body = reqwest::Body::wrap_stream(request.into_body().into_data_stream());
+    // Hashed as the bytes stream past on their way to Garage, so nothing is buffered purely
+    // to be digested — a ~1GB upload would not fit in this pod's memory limit. The hasher is
+    // shared with the stream adapter rather than returned by it, because wrap_stream takes
+    // ownership of the stream and there is no way to get anything back out afterwards.
+    let hasher = Arc::new(Mutex::new(Sha256::new()));
+    let hashed_body = {
+        let hasher = Arc::clone(&hasher);
+        request
+            .into_body()
+            .into_data_stream()
+            // map_ok, so a broken upload stream still propagates its error to the PUT rather
+            // than being silently treated as the end of the body.
+            .map_ok(move |chunk| {
+                // The lock can never actually contend — one stream, polled one chunk at a
+                // time — and is here only to make the hasher Send + Sync for wrap_stream.
+                // Nothing holds it across an await, so it cannot be poisoned either.
+                hasher.lock().expect("hasher mutex poisoned").update(&chunk);
+                chunk
+            })
+    };
+
     let put_result = app
         .s3
-        .put(&key, content_length, &content_type, body)
+        .put(
+            &key,
+            content_length,
+            &content_type,
+            reqwest::Body::wrap_stream(hashed_body),
+        )
         .await;
 
     if let Err(e) = put_result {
@@ -353,6 +478,18 @@ async fn upload_audio(
         return Err(AudioError::UploadFailed);
     }
 
+    // Only knowable now: the hash covers the whole body, so the duplicate check below cannot
+    // happen before the bytes have been sent. That is the cost of hashing server-side instead
+    // of trusting a client-supplied digest — a duplicate is detected after the transfer, not
+    // before it.
+    let content_hash = to_hex(
+        &hasher
+            .lock()
+            .expect("hasher mutex poisoned")
+            .clone()
+            .finalize(),
+    );
+
     // The flip to 'uploaded' and the three queue rows go in together: a committed 'uploaded'
     // with no jobs is a file that silently never gets transcoded, and jobs against a row
     // that never became 'uploaded' are three guaranteed failures.
@@ -363,16 +500,35 @@ async fn upload_audio(
 
     // Guarded on the row still being 'uploading' so a delete that lands while this upload
     // was in flight isn't clobbered back to 'uploaded' by this update arriving after it.
-    let flipped = sqlx::query(
-        "UPDATE audio_files SET status = 'uploaded' WHERE id = $1 AND status = 'uploading'",
+    let flip = sqlx::query(
+        "UPDATE audio_files SET status = 'uploaded', content_hash = $2
+         WHERE id = $1 AND status = 'uploading'",
     )
     .bind(file_id)
+    .bind(&content_hash)
     .execute(&mut *tx)
-    .await
-    .map_err(|e| {
-        eprintln!("query failed: {e}");
-        AudioError::Internal
-    })?;
+    .await;
+
+    let flipped = match flip {
+        Ok(flipped) => flipped,
+        // The partial UNIQUE index fired: this user already has a live file with this name
+        // and these exact bytes. Letting the database decide is what makes two identical
+        // uploads racing each other safe — a SELECT-then-write check would let both through.
+        Err(e) if is_unique_violation(&e) => {
+            // Already aborted by the violation, so nothing further can run inside it.
+            if let Err(e) = tx.rollback().await {
+                eprintln!("rollback failed: {e}");
+            }
+            return Err(
+                discard_duplicate(&app, file_id, &key, user.id, &query.filename, &content_hash)
+                    .await,
+            );
+        }
+        Err(e) => {
+            eprintln!("query failed: {e}");
+            return Err(AudioError::Internal);
+        }
+    };
 
     // Zero means exactly that lost race: the row is already 'deleted' (or 'delete_pending')
     // and queueing work against it would only produce three jobs with nothing to read.
@@ -427,16 +583,26 @@ struct AudioFileRow {
     transcodes: TranscodeRow,
 }
 
+// One field rather than a set of booleans, so a client renders a single switch and cannot
+// paint two states at once.
+//
+// "ready"   - the has_aac_* column: the derivative is in the bucket and can be served
+// "running" - a worker holds the job right now
+// "pending" - queued, not claimed by any worker yet
+// "failed"  - gave up, either terminally or after exhausting its attempts
 #[derive(Serialize)]
 struct TranscodeState {
     target: &'static str,
-    // The has_aac_* column: the derivative is in the bucket and can be served.
-    ready: bool,
-    // 0–100 while a worker is actually running this tier, null otherwise — including a
-    // 'pending' job nobody has picked up yet, and a tier whose worker has not ticked since
-    // the progress key's TTL lapsed.
+    state: &'static str,
+    // 0–100, and only while running — and even then absent until the first tick lands, or if
+    // the progress key's TTL lapsed because the worker stopped reporting.
     progress: Option<u8>,
 }
+
+const STATE_READY: &str = "ready";
+const STATE_RUNNING: &str = "running";
+const STATE_PENDING: &str = "pending";
+const STATE_FAILED: &str = "failed";
 
 // The flags-and-in-flight-targets shape that both list_audio and the SSE snapshot need,
 // selected by TRANSCODE_COLUMNS. Kept in one place so the two cannot disagree about what
@@ -447,6 +613,7 @@ struct TranscodeRow {
     has_aac_128: bool,
     has_aac_224: bool,
     in_progress: Vec<String>,
+    failed: Vec<String>,
 }
 
 impl TranscodeRow {
@@ -458,6 +625,20 @@ impl TranscodeRow {
             "aac_128" => self.has_aac_128,
             "aac_224" => self.has_aac_224,
             _ => false,
+        }
+    }
+
+    // Ready is checked first and wins outright: the flag means the object is in the bucket and
+    // servable, which is true regardless of what any job row says about it afterwards.
+    fn state(&self, target: &str) -> &'static str {
+        if self.ready(target) {
+            STATE_READY
+        } else if self.failed.iter().any(|t| t == target) {
+            STATE_FAILED
+        } else if self.in_progress.iter().any(|t| t == target) {
+            STATE_RUNNING
+        } else {
+            STATE_PENDING
         }
     }
 
@@ -475,7 +656,9 @@ impl TranscodeRow {
             .iter()
             .map(|&target| TranscodeState {
                 target,
-                ready: self.ready(target),
+                state: self.state(target),
+                // Asked for only when a worker actually holds the job: a percentage against a
+                // queued or finished tier would be stale at best.
                 progress: self
                     .in_progress
                     .iter()
@@ -490,9 +673,15 @@ impl TranscodeRow {
 // `status = 'in_progress'` without a lease check on purpose: a lapsed lease still means the
 // tier is queued rather than finished, and the absent progress key is what makes it read as
 // "no percentage yet" instead of a stale one.
+//
+// Two subqueries rather than one aggregate over statuses: both are index-only lookups on
+// transcode_jobs_audio_file_id_idx, and keeping them separate means the Rust side receives two
+// plain Vec<String> instead of having to unpack a JSON object per row.
 const TRANSCODE_COLUMNS: &str = r#"has_aac_64, has_aac_128, has_aac_224,
     ARRAY(SELECT j.target FROM transcode_jobs j
-          WHERE j.audio_file_id = audio_files.id AND j.status = 'in_progress') AS in_progress"#;
+          WHERE j.audio_file_id = audio_files.id AND j.status = 'in_progress') AS in_progress,
+    ARRAY(SELECT j.target FROM transcode_jobs j
+          WHERE j.audio_file_id = audio_files.id AND j.status = 'failed') AS failed"#;
 
 // Progress is cosmetic, and k8s/redis.yaml is one pod on one node that is gone for good if
 // that node is lost. So a Redis failure degrades to "no percentage reported" rather than
@@ -775,20 +964,32 @@ async fn subscribe_progress(
         // Anything that doesn't parse is silently dropped rather than breaking the stream:
         // the pattern could match a key written by something other than a worker.
         let target = target_from_progress_key(msg.get_channel_name())?;
-        let percent = msg.get_payload::<String>().ok()?.parse::<u8>().ok()?;
-        if percent > 100 {
-            return None;
-        }
+        let payload = msg.get_payload::<String>().ok()?;
+
+        // Three kinds of message on one channel. The two terminal markers exist because a tier
+        // going ready or failed is a Postgres write — without them a live subscriber would sit
+        // at 99% until it happened to refetch the list.
+        let state = match payload.as_str() {
+            PROGRESS_READY => TranscodeState {
+                target,
+                state: STATE_READY,
+                progress: Some(100),
+            },
+            PROGRESS_FAILED => TranscodeState {
+                target,
+                state: STATE_FAILED,
+                progress: None,
+            },
+            percent => TranscodeState {
+                target,
+                state: STATE_RUNNING,
+                progress: Some(percent.parse::<u8>().ok().filter(|p| *p <= 100)?),
+            },
+        };
 
         Event::default()
             .event("progress")
-            .json_data(TranscodeState {
-                target,
-                // A tier being transcoded right now is by definition not yet servable; the
-                // flip to ready is a Postgres write, which the next snapshot reports.
-                ready: false,
-                progress: Some(percent),
-            })
+            .json_data(state)
             .inspect_err(|e| eprintln!("sse progress serialize failed: {e}"))
             .ok()
             .map(Ok)

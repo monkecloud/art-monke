@@ -19,6 +19,9 @@ redis = { version = "1.7", default-features = false, features = ["aio", "tokio-c
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "stream"] }
 rusty-s3 = "0.10.2"
 serde = { version = "1", features = ["derive"] }
+# For hashing upload bodies. Already in the tree via rusty-s3's request signing, so this
+# pins the same major version rather than pulling a second copy in.
+sha2 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = [
     "runtime-tokio",
     "tls-rustls",

@@ -46,6 +46,16 @@ pub fn derivative_key(s3_key: &str, target: &str) -> String {
     format!("{s3_key}.{target}.m4a")
 }
 
+/// Payloads a worker publishes on a [`progress_key`] channel, beyond a bare 0-100 integer.
+///
+/// The key itself only ever holds a percentage — it exists so a *polling* reader (list_audio,
+/// and the SSE snapshot) can see where a running transcode got to, and it expires on its own.
+/// The channel additionally carries these two terminal markers, because a tier going ready or
+/// failed is a Postgres write that a live subscriber would otherwise not hear about until it
+/// refetched. Constants here so both sides cannot drift on the spelling.
+pub const PROGRESS_READY: &str = "ready";
+pub const PROGRESS_FAILED: &str = "failed";
+
 /// Redis key *and* pub/sub channel for one in-flight transcode's percentage. The api
 /// `PSUBSCRIBE`s `progress:{audio_file_id}:*` to pick up all three at once.
 pub fn progress_key(audio_file_id: i64, target: &str) -> String {
