@@ -2,9 +2,11 @@ import type { AudioFile } from './audioFiles'
 
 export function FileList({
   files,
+  onPlay,
   onDelete,
 }: {
   files: AudioFile[]
+  onPlay: (file: AudioFile) => void
   onDelete: (id: number) => void
 }) {
   if (files.length === 0) {
@@ -18,9 +20,14 @@ export function FileList({
           <span className="file-name">{file.filename}</span>
           <span className={`status-badge status-${file.status}`}>{file.status}</span>
           {file.status === 'uploaded' && (
-            <a className="link" href={`/api/audio/${file.id}`} download={file.filename}>
-              Download
-            </a>
+            <>
+              <button type="button" className="link" onClick={() => onPlay(file)}>
+                Play
+              </button>
+              <a className="link" href={`/api/audio/${file.id}`} download={file.filename}>
+                Download
+              </a>
+            </>
           )}
           <button type="button" className="link" onClick={() => onDelete(file.id)}>
             Delete

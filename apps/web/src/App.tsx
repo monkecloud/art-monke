@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { type AudioFile, deleteAudioFile, fetchAudioFiles } from './audioFiles'
 import { FileList } from './FileList'
 import { LoginPage } from './LoginPage'
+import { Player } from './Player'
 import { ToastStack, useToasts } from './Toasts'
 import { uploadAudio } from './uploadAudio'
 
@@ -14,6 +15,7 @@ type Session =
 export default function App() {
   const [session, setSession] = useState<Session>({ kind: 'loading' })
   const [files, setFiles] = useState<AudioFile[]>([])
+  const [nowPlaying, setNowPlaying] = useState<AudioFile | null>(null)
   const toasts = useToasts()
 
   const refreshFiles = useCallback(() => {
@@ -118,9 +120,13 @@ export default function App() {
 
       <FileList
         files={files}
+        onPlay={setNowPlaying}
         onDelete={(id) => {
           deleteAudioFile(id)
-            .then(refreshFiles)
+            .then(() => {
+              setNowPlaying((f) => (f?.id === id ? null : f))
+              refreshFiles()
+            })
             .catch(() => {
               toasts.upsert(
                 { id: `delete-${id}`, kind: 'error', label: 'Failed to delete file' },
@@ -131,6 +137,7 @@ export default function App() {
       />
 
       <ToastStack toasts={toasts.toasts} onDismiss={toasts.dismiss} />
+      {nowPlaying && <Player key={nowPlaying.id} file={nowPlaying} />}
     </main>
   )
 }
