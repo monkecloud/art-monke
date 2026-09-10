@@ -42,10 +42,13 @@ jobs:
       matrix:
         include:
           # `suffix` is appended to the repo's own GHCR path, so web is the bare repo name
-          # and the other two hang off it. That path follows the repo name, which is what
-          # makes renaming the repo a cluster change and not just a GitHub one: the images
-          # land in new packages, those arrive private and unlinked, and nothing pulls them
-          # until ghcr-creds has been granted read on each.
+          # and the other two hang off it. That path follows the repo name, so a rename moves
+          # all three images and k8s/ has to be rewritten to match. The packages themselves
+          # need no setup: Actions links what it publishes to this repo and they inherit its
+          # access, so ghcr-creds pulls them without being granted anything (verified on the
+          # monke-app -> art-monke rename). What does bite is ordering — Flux applies the
+          # image-name commit before this workflow has pushed a tag to the new path, so
+          # expect one reconcile of ErrImagePull that clears itself.
           #
           # `context` is per service because the two Rust images are one Cargo workspace:
           # they share apps/common, and a path dependency outside the build context does not
