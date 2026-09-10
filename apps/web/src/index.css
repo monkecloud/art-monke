@@ -127,12 +127,25 @@ input {
   background: rgba(107, 114, 128, 0.14);
 }
 
-/* The track loaded into the player, marked on the filename rather than on the row. Colour
-   rather than a background: the row's background already means "the pointer is here", and
-   two tints in the same place read as one confused state. The accent is the one links use. */
+/* The track loaded into the player. A tint of the accent rather than more of the hover grey
+   above: the two states overlap constantly, so they are told apart by hue rather than by
+   strength. Translucent for the same reason the hover is — it has to sit on either ground. */
+.file-row-playing {
+  background: rgba(37, 99, 235, 0.14);
+}
+
+/* Hovering the row that is already playing still has to acknowledge the pointer, so the
+   playing tint deepens instead of the hover simply replacing it. Both classes are named to
+   clear the plain hover rule above, which is otherwise the more specific of the two. */
+.file-row-playing.file-row-playable:hover,
+.file-row-playing.file-row-playable:focus-visible {
+  background: rgba(37, 99, 235, 0.22);
+}
+
+/* Weight rather than colour on the name: the row tint already carries the accent, and
+   repeating it on the text reads as a link. */
 .file-row-playing .file-name {
-  color: #2563eb;
-  font-weight: 500;
+  font-weight: 700;
 }
 
 /* The file and its controls: what .file-row itself used to be, before the transcode tiers
