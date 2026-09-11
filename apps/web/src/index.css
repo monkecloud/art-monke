@@ -424,12 +424,56 @@ input {
 }
 
 /* Wide enough for the longest reading it can hold — "102.5%" — so that neither stepper
-   moves as the digits change, and lining figures so the number itself does not jitter. */
+   moves as the digits change, and lining figures so the number itself does not jitter. The
+   border is transparent rather than absent so that lighting it up below does not add a
+   pixel and shove the steppers apart. */
 .player-speed-value {
+  font: inherit;
+  font-size: 0.8rem;
   min-width: 3.5rem;
   text-align: center;
-  font-size: 0.8rem;
   font-variant-numeric: tabular-nums;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 0.15rem 0.25rem;
+  /* It is a <button> — the click resets to 100% — so the page's own button fill and padding
+     have to come back off for it to read as the plain number it was before. */
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+
+/* At 100%, which is most of the time. No dimming, unlike the steppers: 100% is the resting
+   state rather than an unavailable one, and greying the number out would suggest the speed
+   itself was somehow off. */
+.player-speed-value:disabled {
+  cursor: default;
+}
+
+/* Anything but 100%. The readout carries it rather than the group, because the group's own
+   rules are gone at phone width and a box drawn there would have run to the edge of the
+   screen — this reads the same at both widths, and sits on the one part that says what the
+   setting actually is. Blue is the page's accent, lightened to the tint that holds up on
+   the bar's near-black. */
+.player-speed-modified .player-speed-value {
+  color: #93c5fd;
+  border-color: rgba(96, 165, 250, 0.55);
+  background: rgba(96, 165, 250, 0.16);
+}
+
+/* Only ever reachable when modified — at 100% the button is disabled. Brightening the fill
+   rather than changing the colour, so the hover reads as "this is pressable" without
+   implying the pill means something different from what it meant a moment ago. */
+.player-speed-modified .player-speed-value:hover {
+  border-color: rgba(96, 165, 250, 0.8);
+  background: rgba(96, 165, 250, 0.28);
+  color: #fff;
+}
+
+/* Brought up out of its dimmed state with it, so the pair reads as one lit control rather
+   than a lit number next to a greyed-out word. */
+.player-speed-modified .player-speed-label {
+  color: rgba(255, 255, 255, 0.8);
 }
 
 /* A line of its own under the name and meta, across both of the row's columns. */
@@ -609,6 +653,13 @@ input {
      row has to fit within 320px. */
   .player-speed-step {
     padding: 0.4rem 0.5rem;
+  }
+
+  /* Matched to the steppers either side of it now that it is a button too. Height only —
+     the width is what the controls row is short of at 320px, and the readout already
+     reserves enough of it for its longest reading. */
+  .player-speed-value {
+    padding-block: 0.4rem;
   }
 
   /* Dropped rather than shrunk: it is the first control to become unusable at this width,
