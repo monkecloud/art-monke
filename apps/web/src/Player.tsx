@@ -57,6 +57,13 @@ function speedPercent(step: number): number {
   return 100 + step * SPEED_STEP_PERCENT
 }
 
+// Survives the remount that a track change causes, and nothing more. A module-level let
+// rather than storage on purpose: a speed set for one listening session should carry across
+// the rest of it, but a reload starts at 100% — coming back tomorrow to a library that plays
+// everything at 85%, with no memory of having asked for it, is the worse surprise. That is
+// also why this is not the localStorage treatment volume gets above.
+let lastSpeedStep = 0
+
 // "100%", "97.5%". The trailing ".0" is dropped rather than padded — the readout is given a
 // fixed width in CSS instead, so the buttons either side of it hold still regardless.
 function formatSpeed(percent: number): string {
@@ -127,10 +134,10 @@ export function Player({
   // Fixed at mount: there is one tier today, and a second one landing mid-song should not
   // reload the element out from under the listener.
   const [tier] = useState(() => readyTargets[readyTargets.length - 1])
-  // Steps from 100%, not a rate. Deliberately not persisted the way volume is, and reset by
-  // the remount on every track change: volume is how loud the room is, speed is something
-  // done to one particular track.
-  const [speedStep, setSpeedStep] = useState(0)
+  // Steps from 100%, not a rate. Seeded from the last value this page set so it rides
+  // through the remount a track change causes — see lastSpeedStep above for how far that
+  // goes and why it stops there.
+  const [speedStep, setSpeedStep] = useState(() => lastSpeedStep)
   // The two forms it is needed in: one for the readout, one for the element.
   const percent = speedPercent(speedStep)
   const rate = percent / 100
@@ -168,6 +175,13 @@ export function Player({
     el.defaultPlaybackRate = rate
     el.playbackRate = rate
   }, [audioEl, rate])
+
+  // Written from an effect rather than from changeSpeed so the two cannot drift: whatever
+  // the component is rendering is what the next mount starts from, including the seeded
+  // value being written straight back on a track change.
+  useEffect(() => {
+    lastSpeedStep = speedStep
+  }, [speedStep])
 
   // The OS-level media card: Chrome hands this to Android, which is what turns a locked
   // phone or a minimised browser into something with a title, artwork and transport
@@ -294,6 +308,14 @@ export function Player({
     setSpeedStep((step) => Math.min(MAX_SPEED_STEP, Math.max(MIN_SPEED_STEP, step + steps)))
   }
 
+  // The way back from twenty steps out without pressing a stepper twenty times. On the
+  // readout rather than a fourth control, because the readout is already the thing that says
+  // the speed is not 100% — and a bar this crowded does not have room for a button that
+  // spends most of its life doing nothing.
+  function resetSpeed() {
+    setSpeedStep(0)
+  }
+
   function changeVolume(e: React.ChangeEvent<HTMLInputElement>) {
     const v = Number(e.target.value)
     setVolume(v)
@@ -349,7 +371,7 @@ export function Player({
           tape is slowed down. The clock either side of the scrubber goes on reading the
           file's own duration — at 90% a 3:00 track still says 3:00 and simply takes longer
           to get there, which is the honest reading of where you are in the file. */}
-      <div className="player-speed">
+      <div className={`player-speed${speedStep === 0 ? '' : ' player-speed-modified'}`}>
         <span className="player-speed-label">Speed</span>
         <button
           type="button"
@@ -360,10 +382,27 @@ export function Player({
         >
           −
         </button>
-        {/* Announced on change: the buttons say what they do, but not what they did. */}
-        <span className="player-speed-value" aria-live="polite">
+        {/* Announced on change: the buttons say what they do, but not what they did. The
+            label carries the reading, so an update to it is what gets read out — which is
+            why the reset half of it is only there when there is something to reset, rather
+            than being repeated after every press. Inert at 100%: it is styled as plain text
+            there, and a pointer cursor promising a reset that does nothing is worse than no
+            affordance at all. */}
+        <button
+          type="button"
+          className="player-speed-value"
+          aria-live="polite"
+          aria-label={
+            speedStep === 0
+              ? `Speed ${formatSpeed(percent)}`
+              : `Speed ${formatSpeed(percent)}, reset to 100%`
+          }
+          title={speedStep === 0 ? undefined : 'Reset to 100%'}
+          disabled={speedStep === 0}
+          onClick={resetSpeed}
+        >
           {formatSpeed(percent)}
-        </span>
+        </button>
         <button
           type="button"
           className="player-speed-step"
