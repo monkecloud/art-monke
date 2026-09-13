@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { AudioFile } from './audioFiles'
 import { formatDuration } from './format'
+import {
+  MAX_SPEED_STEP,
+  MIN_SPEED_STEP,
+  carriedSpeedStep,
+  carrySpeedStep,
+  clampSpeedStep,
+  formatSpeed,
+  speedPercent,
+} from './speed'
 
 // The element reports NaN for both of these until its metadata lands, and formatDuration
 // returns null rather than guessing — a clock that has not started reads 0:00.
@@ -43,33 +52,6 @@ function storeVolume(volume: number) {
   }
 }
 
-// Playback speed, in 2.5% steps either side of 100%. Held as a step count rather than as a
-// rate, because 2.5 * n is exact in binary where repeatedly taking 0.025 off a rate is not —
-// eight steps down that way lands on 0.8000000000000002 and the readout has to hide it.
-const SPEED_STEP_PERCENT = 2.5
-// Half speed to one and a half. Chrome mutes the audio outright once the rate leaves the
-// range it is willing to resample, and there is no signal back when it does — so the ends
-// are set well inside it rather than at it.
-const MIN_SPEED_STEP = -20
-const MAX_SPEED_STEP = 20
-
-function speedPercent(step: number): number {
-  return 100 + step * SPEED_STEP_PERCENT
-}
-
-// Survives the remount that a track change causes, and nothing more. A module-level let
-// rather than storage on purpose: a speed set for one listening session should carry across
-// the rest of it, but a reload starts at 100% — coming back tomorrow to a library that plays
-// everything at 85%, with no memory of having asked for it, is the worse surprise. That is
-// also why this is not the localStorage treatment volume gets above.
-let lastSpeedStep = 0
-
-// "100%", "97.5%". The trailing ".0" is dropped rather than padded — the readout is given a
-// fixed width in CSS instead, so the buttons either side of it hold still regardless.
-function formatSpeed(percent: number): string {
-  return `${Number.isInteger(percent) ? percent : percent.toFixed(1)}%`
-}
-
 // `preservesPitch` is the standard name; the prefixed pair is what browsers older than
 // Chrome 109 / Safari 16.4 / Firefox 111 answer to. Worth carrying, because the property
 // defaults to *true* — a browser that ignores all three time-stretches instead, which is
@@ -108,6 +90,7 @@ export function Player({
   streamBase,
   readyTargets,
   audioRef,
+  onSpeedStepChange,
 }: {
   file: AudioFile
   // Who uploaded it: the signed-in account on your own files, and the account the library
@@ -123,6 +106,10 @@ export function Player({
   // without this component having to expose a whole control surface. A ref rather than
   // state, because nothing above needs to re-render when the element arrives.
   audioRef: React.RefObject<HTMLAudioElement | null>
+  // Called with the current step on mount and on every change, for a caller that has somewhere
+  // to put it — the public library writes it into the address bar. Optional because your own
+  // page has no URL to keep in step: the speed lives in the session there and nowhere else.
+  onSpeedStepChange?: (step: number) => void
 }) {
   const [isPlaying, setIsPlaying] = useState(true)
   const [currentTime, setCurrentTime] = useState(0)
@@ -135,9 +122,10 @@ export function Player({
   // reload the element out from under the listener.
   const [tier] = useState(() => readyTargets[readyTargets.length - 1])
   // Steps from 100%, not a rate. Seeded from the last value this page set so it rides
-  // through the remount a track change causes — see lastSpeedStep above for how far that
-  // goes and why it stops there.
-  const [speedStep, setSpeedStep] = useState(() => lastSpeedStep)
+  // through the remount a track change causes — see carriedSpeedStep for how far that goes
+  // and why it stops there. A link that named a speed has already seeded it, so arriving on
+  // one and then changing track behaves like having pressed the steppers by hand.
+  const [speedStep, setSpeedStep] = useState(carriedSpeedStep)
   // The two forms it is needed in: one for the readout, one for the element.
   const percent = speedPercent(speedStep)
   const rate = percent / 100
@@ -176,12 +164,35 @@ export function Player({
     el.playbackRate = rate
   }, [audioEl, rate])
 
-  // Written from an effect rather than from changeSpeed so the two cannot drift: whatever
-  // the component is rendering is what the next mount starts from, including the seeded
-  // value being written straight back on a track change.
+  // Autoplay, and the reason it is a play() call here rather than the `autoPlay` attribute on
+  // the element: the attribute gives nothing back when the browser refuses. Every track
+  // started by a click has a gesture behind it and is allowed, but a link to a track is opened
+  // cold — no gesture, so Chrome and Safari decline, and the attribute's silent refusal would
+  // leave this bar reading "Pause" over silence. The rejection is what corrects the optimistic
+  // initial state; a successful start is reported by the element's own `play` event.
+  //
+  // Deliberately after the effect above, so the first frame plays at the speed the link asked
+  // for rather than sliding onto it: effects run in the order they are declared, and loading a
+  // resource resets playbackRate to defaultPlaybackRate.
   useEffect(() => {
-    lastSpeedStep = speedStep
-  }, [speedStep])
+    if (!audioEl) return
+    // Nothing to clean up: a track change unmounts this component outright, and a rejection
+    // on the way out is the same "could not start" this already handles.
+    audioEl.play().then(
+      () => setIsPlaying(true),
+      () => setIsPlaying(false),
+    )
+  }, [audioEl])
+
+  // Written from an effect rather than from changeSpeed so the two cannot drift: whatever
+  // the component is rendering is what the next mount starts from — and what the caller is
+  // told — including the seeded value being written straight back on a track change. That
+  // mount-time report is not redundant: it is what puts the speed in the URL for a track
+  // started by a click, where the caller knows the track but not what speed the session is at.
+  useEffect(() => {
+    carrySpeedStep(speedStep)
+    onSpeedStepChange?.(speedStep)
+  }, [speedStep, onSpeedStepChange])
 
   // The OS-level media card: Chrome hands this to Android, which is what turns a locked
   // phone or a minimised browser into something with a title, artwork and transport
@@ -305,7 +316,7 @@ export function Player({
   // Clamped here rather than only on the buttons' disabled state, so holding the key repeat
   // on a focused button cannot walk past the end of the range.
   function changeSpeed(steps: number) {
-    setSpeedStep((step) => Math.min(MAX_SPEED_STEP, Math.max(MIN_SPEED_STEP, step + steps)))
+    setSpeedStep((step) => clampSpeedStep(step + steps))
   }
 
   // The way back from twenty steps out without pressing a stepper twenty times. On the
@@ -334,7 +345,6 @@ export function Player({
         ref={attachAudio}
         // Always a tier, never the source.
         src={`${streamBase}?tier=${tier}`}
-        autoPlay
         onPlay={() => setIsPlaying(true)}
         onPause={() => setIsPlaying(false)}
         onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
