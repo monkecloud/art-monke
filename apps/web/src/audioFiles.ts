@@ -8,7 +8,10 @@ export type TranscodeState = {
 }
 
 export type AudioFile = {
-  id: number
+  // Opaque and unordered — the api's `public_id`, not its primary key, which never leaves the
+  // cluster. Nothing may infer anything from its shape or compare two of them for order; it is
+  // only ever matched for equality and put in a URL. See apps/api/migrations/0010_public_id.sql.
+  id: string
   filename: string
   status: string
   created_at: string
@@ -18,14 +21,22 @@ export type AudioFile = {
   transcodes: TranscodeState[]
 }
 
+// The tiers a file can actually be played from, ascending because `states` is. Taken over the
+// list payload's own `transcodes` on a public library and over the live overlay on your own,
+// which is why it takes the states rather than the file: what is ready is a question about the
+// freshest thing the caller has, and there is one answer to it either way.
+export function readyTargets(states: TranscodeState[]): string[] {
+  return states.filter((s) => s.state === 'ready').map((s) => s.target)
+}
+
 export async function fetchAudioFiles(signal?: AbortSignal): Promise<AudioFile[]> {
   const res = await fetch('/api/audio', { signal })
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
   return (await res.json()) as AudioFile[]
 }
 
-export async function deleteAudioFile(id: number): Promise<void> {
-  const res = await fetch(`/api/audio/${id}`, { method: 'DELETE' })
+export async function deleteAudioFile(id: string): Promise<void> {
+  const res = await fetch(`/api/audio/${encodeURIComponent(id)}`, { method: 'DELETE' })
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
 }
 
@@ -52,10 +63,10 @@ export async function fetchUserAudioFiles(
 // Two shapes, because a public library is served by its own routes rather than by the owner's:
 // /api/audio/:id is scoped to the signed-in caller and 404s for someone else's file even when
 // that same file is listed publicly.
-export function ownStreamBase(id: number): string {
-  return `/api/audio/${id}`
+export function ownStreamBase(id: string): string {
+  return `/api/audio/${encodeURIComponent(id)}`
 }
 
-export function userStreamBase(username: string, id: number): string {
-  return `/api/users/${encodeURIComponent(username)}/audio/${id}`
+export function userStreamBase(username: string, id: string): string {
+  return `/api/users/${encodeURIComponent(username)}/audio/${encodeURIComponent(id)}`
 }

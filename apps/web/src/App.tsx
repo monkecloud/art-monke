@@ -3,25 +3,35 @@ import { type AudioFile, deleteAudioFile, fetchAudioFiles, ownStreamBase } from 
 import { FileList } from './FileList'
 import { LoginPage } from './LoginPage'
 import { Player } from './Player'
-import { sharedPath, sharedUsername } from './routes'
+import { sharedPath, sharedRoute, sharedTrackPath } from './routes'
 import { useSession } from './session'
 import { SharedLibrary } from './SharedLibrary'
 import { ToastStack, useToasts } from './Toasts'
 import { type PendingUpload, uploadAll } from './uploadAudio'
+import { carrySpeedStep } from './speed'
+
+// Parsed once here rather than per render: the address bar is rewritten in place while a track
+// plays, so reading it during render would mean rereading the app's own writes and treating
+// them as a fresh link. The link is what the page was *opened* on, which is a load-time fact —
+// and every navigation between the two pages is still a real one that reloads this module.
+const route = sharedRoute(window.location.pathname, window.location.search)
+
+// Before anything renders, so the first player mounts already at the speed the link asked for
+// instead of starting at 100% and being corrected a frame later. At module scope rather than in
+// an effect for that ordering, and because it is a one-time reading of a one-time fact.
+if (route?.speedStep != null) carrySpeedStep(route.speedStep)
 
 export default function App() {
   const [session, setSession] = useSession()
-
-  // Read during render rather than held in state: it only changes on a navigation, and every
-  // navigation here is a real one that reloads the page.
-  const shared = sharedUsername(window.location.pathname)
 
   // Checked ahead of every session branch below. A public library is readable without an
   // account, so neither the login page nor the "could not reach the api" screen has any
   // business standing in front of one — the session is still resolved, but only to decide
   // what the corner of the page offers.
-  if (shared !== null) {
-    return <SharedLibrary username={shared} session={session} />
+  if (route !== null) {
+    return (
+      <SharedLibrary username={route.username} trackId={route.trackId} session={session} />
+    )
   }
 
   if (session.kind === 'loading') {
@@ -63,7 +73,15 @@ function SignedInApp({ username, onSignedOut }: { username: string; onSignedOut:
   // The Player's <audio>, handed back up so a click on the row that is already playing can
   // toggle it. Held here rather than in the Player because the file list is what needs it.
   const audioRef = useRef<HTMLAudioElement | null>(null)
+  // Mirrored out of the player only so the Share link below can name it. Nothing on this page
+  // reads it back, and the URL of this page never changes — your own files are not at a
+  // shareable address, which is the whole reason the Share link exists.
+  const [speedStep, setSpeedStep] = useState(0)
   const toasts = useToasts()
+
+  // Memoised for the same reason the shared page memoises its own: the player reports through
+  // this from an effect keyed on the callback.
+  const onSpeedStepChange = useCallback((step: number) => setSpeedStep(step), [])
 
   const refreshFiles = useCallback(() => {
     fetchAudioFiles()
@@ -89,8 +107,20 @@ function SignedInApp({ username, onSignedOut }: { username: string; onSignedOut:
           {/* A link to your own public page rather than a copy-to-clipboard button: following
               it shows you exactly what a visitor sees, which is worth more than the URL on its
               own when what you are about to hand out is a public link. The address bar is then
-              the thing to copy. */}
-          <a className="link" href={sharedPath(username)}>
+              the thing to copy.
+
+              Pointed at whatever is playing, at the speed it is playing at, because that is
+              the link someone actually wants to send — and following it still shows exactly
+              what the recipient gets, now including the track opening by itself. The bare
+              library when nothing is playing, which is the only thing there is to show then. */}
+          <a
+            className="link"
+            href={
+              nowPlaying
+                ? sharedTrackPath(username, nowPlaying.file.id, speedStep)
+                : sharedPath(username)
+            }
+          >
             Share
           </a>
           <button
@@ -191,6 +221,7 @@ function SignedInApp({ username, onSignedOut }: { username: string; onSignedOut:
           streamBase={ownStreamBase(nowPlaying.file.id)}
           readyTargets={nowPlaying.ready}
           audioRef={audioRef}
+          onSpeedStepChange={onSpeedStepChange}
         />
       )}
     </main>

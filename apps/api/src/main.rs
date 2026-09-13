@@ -296,7 +296,8 @@ impl IntoResponse for AudioError {
 
 #[derive(Serialize)]
 struct UploadedFile {
-    id: i64,
+    // The public_id, like every other id this api serves. See 0010_public_id.sql.
+    id: String,
 }
 
 #[derive(Deserialize)]
@@ -407,8 +408,11 @@ async fn upload_audio(
     // it has no relation to any session.
     let key = format!("{}/{}", user.id, random_token());
 
-    let file_id: i64 = sqlx::query_scalar(
-        "INSERT INTO audio_files (user_id, s3_key, filename) VALUES ($1, $2, $3) RETURNING id",
+    // Both ids come back: the primary key drives everything below — the queue rows, the
+    // duplicate discard, the Redis keys — while public_id is the only one the client is told.
+    let (file_id, public_id): (i64, String) = sqlx::query_as(
+        "INSERT INTO audio_files (user_id, s3_key, filename) VALUES ($1, $2, $3)
+         RETURNING id, public_id",
     )
     .bind(user.id)
     .bind(&key)
@@ -558,12 +562,15 @@ async fn upload_audio(
         AudioError::Internal
     })?;
 
-    Ok((StatusCode::CREATED, Json(UploadedFile { id: file_id })))
+    Ok((StatusCode::CREATED, Json(UploadedFile { id: public_id })))
 }
 
 #[derive(Serialize)]
 struct AudioFile {
-    id: i64,
+    // The row's public_id, not its primary key — the client never sees the latter. Named `id`
+    // rather than `public_id` because it is the only id a client has: there is nothing here
+    // for it to be public *as opposed to*. See 0010_public_id.sql.
+    id: String,
     filename: String,
     status: String,
     created_at: String,
@@ -579,7 +586,10 @@ struct AudioFile {
 // the SSE snapshot selects on its own.
 #[derive(sqlx::FromRow)]
 struct AudioFileRow {
+    // Both ids: `public_id` is what goes out, while `id` stays behind to build the Redis
+    // progress keys, which are keyed on the primary key and never leave the cluster.
     id: i64,
+    public_id: String,
     filename: String,
     status: String,
     created_at: String,
@@ -675,6 +685,15 @@ impl TranscodeRow {
     }
 }
 
+// TRANSCODE_COLUMNS plus the primary key, for the one caller that finds a row by public_id and
+// then needs the internal id to talk to Redis about it.
+#[derive(sqlx::FromRow)]
+struct ProgressRow {
+    id: i64,
+    #[sqlx(flatten)]
+    transcodes: TranscodeRow,
+}
+
 // `status = 'in_progress'` without a lease check on purpose: a lapsed lease still means the
 // tier is queued rather than finished, and the absent progress key is what makes it read as
 // "no percentage yet" instead of a stale one.
@@ -743,7 +762,7 @@ async fn list_audio_for(
     statuses: &str,
 ) -> Result<Vec<AudioFile>, AudioError> {
     let rows: Vec<AudioFileRow> = sqlx::query_as(&format!(
-        r#"SELECT id, filename, status,
+        r#"SELECT id, public_id, filename, status,
                   to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
                       AS created_at,
                   duration_seconds,
@@ -774,7 +793,7 @@ async fn list_audio_for(
         .into_iter()
         .map(|row| AudioFile {
             transcodes: row.transcodes.states(row.id, &progress),
-            id: row.id,
+            id: row.public_id,
             filename: row.filename,
             status: row.status,
             created_at: row.created_at,
@@ -872,11 +891,11 @@ fn derivative_filename(filename: &str, target: &str) -> String {
 async fn download_audio(
     State(app): State<AppState>,
     user: AuthUser,
-    Path(id): Path<i64>,
+    Path(public_id): Path<String>,
     Query(query): Query<DownloadQuery>,
     headers: axum::http::HeaderMap,
 ) -> Result<Response, AudioError> {
-    download_audio_for(&app, user.id, id, query.tier.as_deref(), &headers).await
+    download_audio_for(&app, user.id, &public_id, query.tier.as_deref(), &headers).await
 }
 
 // The public twin of the route above: one track out of one account's public library, for
@@ -888,13 +907,13 @@ async fn download_audio(
 // MP4 that seeks properly, which is all the player ever asks for.
 async fn download_user_audio(
     State(app): State<AppState>,
-    Path((username, id)): Path<(String, i64)>,
+    Path((username, public_id)): Path<(String, String)>,
     Query(query): Query<DownloadQuery>,
     headers: axum::http::HeaderMap,
 ) -> Result<Response, AudioError> {
     let target = query.tier.as_deref().ok_or(AudioError::NotFound)?;
     let user_id = resolve_username(&app.pool, &username).await?;
-    download_audio_for(&app, user_id, id, Some(target), &headers).await
+    download_audio_for(&app, user_id, &public_id, Some(target), &headers).await
 }
 
 // `user_id` is the account the row must belong to: the caller's own on the private route, the
@@ -904,7 +923,7 @@ async fn download_user_audio(
 async fn download_audio_for(
     app: &AppState,
     user_id: i64,
-    id: i64,
+    public_id: &str,
     tier: Option<&str>,
     headers: &axum::http::HeaderMap,
 ) -> Result<Response, AudioError> {
@@ -912,9 +931,9 @@ async fn download_audio_for(
         None => {
             let row: Option<(String, String)> = sqlx::query_as(
                 "SELECT s3_key, filename FROM audio_files
-                 WHERE id = $1 AND user_id = $2 AND status = 'uploaded'",
+                 WHERE public_id = $1 AND user_id = $2 AND status = 'uploaded'",
             )
-            .bind(id)
+            .bind(public_id)
             .bind(user_id)
             .fetch_optional(&app.pool)
             .await
@@ -937,9 +956,9 @@ async fn download_audio_for(
             // bind parameter.
             let row: Option<(String, String)> = sqlx::query_as(&format!(
                 "SELECT s3_key, filename FROM audio_files
-                 WHERE id = $1 AND user_id = $2 AND status = 'uploaded' AND {column}"
+                 WHERE public_id = $1 AND user_id = $2 AND status = 'uploaded' AND {column}"
             ))
-            .bind(id)
+            .bind(public_id)
             .bind(user_id)
             .fetch_optional(&app.pool)
             .await
@@ -1014,16 +1033,16 @@ async fn download_audio_for(
 async fn delete_audio(
     State(app): State<AppState>,
     user: AuthUser,
-    Path(id): Path<i64>,
+    Path(public_id): Path<String>,
 ) -> Result<StatusCode, AudioError> {
     // Guarded on the two live statuses rather than `!= 'deleted'`, so a second click on a row
     // that is already mid-sweep is a no-op rather than something that re-enters the pipeline
     // or resets a deleted_at the retention pass is counting from.
     let marked = sqlx::query(
         "UPDATE audio_files SET status = 'delete_pending'
-         WHERE id = $1 AND user_id = $2 AND status IN ('uploading', 'uploaded')",
+         WHERE public_id = $1 AND user_id = $2 AND status IN ('uploading', 'uploaded')",
     )
-    .bind(id)
+    .bind(&public_id)
     .bind(user.id)
     .execute(&app.pool)
     .await
@@ -1049,13 +1068,13 @@ async fn delete_audio(
 async fn audio_progress(
     State(app): State<AppState>,
     user: AuthUser,
-    Path(id): Path<i64>,
+    Path(public_id): Path<String>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, AudioError> {
-    let row: Option<TranscodeRow> = sqlx::query_as(&format!(
-        "SELECT {TRANSCODE_COLUMNS} FROM audio_files
-         WHERE id = $1 AND user_id = $2 AND status = 'uploaded'"
+    let row: Option<ProgressRow> = sqlx::query_as(&format!(
+        "SELECT id, {TRANSCODE_COLUMNS} FROM audio_files
+         WHERE public_id = $1 AND user_id = $2 AND status = 'uploaded'"
     ))
-    .bind(id)
+    .bind(&public_id)
     .bind(user.id)
     .fetch_optional(&app.pool)
     .await
@@ -1064,7 +1083,10 @@ async fn audio_progress(
         AudioError::Internal
     })?;
 
-    let transcodes = row.ok_or(AudioError::NotFound)?;
+    // The primary key comes back out of the row rather than off the path: the caller named
+    // this file by its public_id, and every Redis progress key below is built on the internal
+    // id the worker publishes under.
+    let ProgressRow { id, transcodes } = row.ok_or(AudioError::NotFound)?;
 
     // Subscribe before reading the snapshot would be tidier in theory, but the snapshot is
     // the whole state rather than a delta — a tick that lands between the two is a
