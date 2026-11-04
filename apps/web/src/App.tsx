@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { type AudioFile, deleteAudioFile, fetchAudioFiles, ownStreamBase } from './audioFiles'
+import {
+  type AudioFile,
+  deleteAudioFile,
+  fetchAudioFiles,
+  nextPlayable,
+  ownStreamBase,
+} from './audioFiles'
 import { FileList } from './FileList'
 import { LoginPage } from './LoginPage'
 import { Player } from './Player'
@@ -78,6 +84,9 @@ function SignedInApp({ username, onSignedOut }: { username: string; onSignedOut:
   // shareable address, which is the whole reason the Share link exists.
   const [speedStep, setSpeedStep] = useState(0)
   const toasts = useToasts()
+  // Worked out on every render rather than when a track ends, so the player knows up front
+  // whether there is one — that is what decides whether the lock screen offers a Next button.
+  const nextTrack = nowPlaying ? nextPlayable(files, nowPlaying.file.id) : null
 
   // Memoised for the same reason the shared page memoises its own: the player reports through
   // this from an effect keyed on the callback.
@@ -222,6 +231,7 @@ function SignedInApp({ username, onSignedOut }: { username: string; onSignedOut:
           readyTargets={nowPlaying.ready}
           audioRef={audioRef}
           onSpeedStepChange={onSpeedStepChange}
+          onNext={nextTrack ? () => setNowPlaying(nextTrack) : undefined}
         />
       )}
     </main>

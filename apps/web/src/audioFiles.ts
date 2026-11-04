@@ -29,6 +29,28 @@ export function readyTargets(states: TranscodeState[]): string[] {
   return states.filter((s) => s.state === 'ready').map((s) => s.target)
 }
 
+// The track after `currentId` in list order that can actually be played, for autoplay when one
+// ends. Forward only, and no wrap: reaching the bottom of the list is the end of the listen, not
+// a cue to start it over. Files with no ready tier are skipped rather than stopped at, the same
+// way their rows refuse a click — one stuck transcode should not end the run.
+//
+// Judged off the list payload's own `transcodes`. On your own page a row's live overlay can be
+// fresher than that, so a file whose transcode finished after the last fetch is skipped here
+// even though its row would play — the safe direction to be wrong in.
+export function nextPlayable(
+  files: AudioFile[],
+  currentId: string,
+): { file: AudioFile; ready: string[] } | null {
+  const at = files.findIndex((f) => f.id === currentId)
+  if (at === -1) return null
+  for (const file of files.slice(at + 1)) {
+    if (file.status !== 'uploaded') continue
+    const ready = readyTargets(file.transcodes)
+    if (ready.length > 0) return { file, ready }
+  }
+  return null
+}
+
 export async function fetchAudioFiles(signal?: AbortSignal): Promise<AudioFile[]> {
   const res = await fetch('/api/audio', { signal })
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)

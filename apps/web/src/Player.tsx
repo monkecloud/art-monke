@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AudioFile } from './audioFiles'
 import { formatDuration } from './format'
 import {
@@ -91,6 +91,7 @@ export function Player({
   readyTargets,
   audioRef,
   onSpeedStepChange,
+  onNext,
 }: {
   file: AudioFile
   // Who uploaded it: the signed-in account on your own files, and the account the library
@@ -110,6 +111,13 @@ export function Player({
   // to put it — the public library writes it into the address bar. Optional because your own
   // page has no URL to keep in step: the speed lives in the session there and nowhere else.
   onSpeedStepChange?: (step: number) => void
+  // Moves to the next track in the caller's list. Called when this one plays through to the end,
+  // and from the lock screen's Next button. Absent when there is no next track, which both stops
+  // playback at the end of the list and keeps the lock screen from offering a Next that does
+  // nothing. Starting the next track is just a remount, and the autoplay effect below starts
+  // it: the earlier click that started this one is the gesture the browser wants, and the speed
+  // carries as it does on any track change.
+  onNext?: () => void
 }) {
   const [isPlaying, setIsPlaying] = useState(true)
   const [currentTime, setCurrentTime] = useState(0)
@@ -264,6 +272,18 @@ export function Player({
     }
   }, [audioEl])
 
+  // Its own effect, keyed on whether there is a next track rather than on the callback: the
+  // caller passes a fresh arrow on every render, and this re-renders several times a second
+  // while the clock ticks. The ref is what keeps the handler pointing at the latest one.
+  const onNextRef = useRef(onNext)
+  onNextRef.current = onNext
+  const hasNext = onNext !== undefined
+  useEffect(() => {
+    if (!('mediaSession' in navigator) || !hasNext) return
+    navigator.mediaSession.setActionHandler('nexttrack', () => onNextRef.current?.())
+    return () => navigator.mediaSession.setActionHandler('nexttrack', null)
+  }, [hasNext])
+
   function togglePlay() {
     if (!audioEl) return
     if (audioEl.paused) audioEl.play()
@@ -349,7 +369,10 @@ export function Player({
         onPause={() => setIsPlaying(false)}
         onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
         onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
-        onEnded={() => setIsPlaying(false)}
+        onEnded={() => {
+          setIsPlaying(false)
+          onNext?.()
+        }}
       />
       <span className="player-name">{file.filename}</span>
       {/* Transport and scrubber are grouped rather than loose in the bar so that at phone

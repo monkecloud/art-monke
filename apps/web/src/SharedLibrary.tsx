@@ -3,6 +3,7 @@ import {
   type AudioFile,
   NoSuchUser,
   fetchUserAudioFiles,
+  nextPlayable,
   readyTargets,
   userStreamBase,
 } from './audioFiles'
@@ -155,6 +156,11 @@ export function SharedLibrary({
   // The owner looking at their own link. Worth saying out loud, because the page is otherwise
   // indistinguishable from a private one and this is exactly where someone checks what they
   // are about to send round.
+  // Same as on your own page: known up front, so the lock screen only offers Next when there
+  // is somewhere to go.
+  const nextTrack =
+    nowPlaying && library.kind === 'ready' ? nextPlayable(library.files, nowPlaying.file.id) : null
+
   const isOwner = session.kind === 'authed' && session.username === username
 
   return (
@@ -229,6 +235,8 @@ export function SharedLibrary({
           readyTargets={nowPlaying.ready}
           audioRef={audioRef}
           onSpeedStepChange={onSpeedStepChange}
+          // The address bar follows on its own, through the replaceState effect above.
+          onNext={nextTrack ? () => setNowPlaying(nextTrack) : undefined}
         />
       )}
     </main>
